@@ -1,0 +1,43 @@
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<script src="https://cdn.tailwindcss.com"></script>
+	<link rel="shortcut icon" href="{{ url_for('static', filename='42.jpg') }}">
+	<title>
+	{% if title|length %}
+		{{title}}
+	{% else %}
+		Students
+	{% endif %}
+	</title>
+</head>
+	<body class="w-full h-full bg-neutral-100 p-0 m-0 text-center">
+		<h1 class="text-xl font-serif">42 Firenze students list</h1>
+		<main class="px-6 py-3 space-y-4">
+			{% for student in students %}
+				<a class="flex w-full px-4 py-2 border border-gray-400 text-left" href="https://profile.intra.42.fr/users/{{student.login}}">
+					<div>
+						{% if student.image.link %}
+							<img src="{{student.image.link}}" class="h-72 max-w-44 object-scale-down"/>
+						{%else%}
+							<img src="/static/placeholder-user.png" class="h-72 max-w-44 object-scale-down"/>
+						{%endif%}
+						<h1>{{student.login}}</h1>
+					</div>
+					<div class="flex flex-col justify-center gap-2">
+						<h2>Display name: {{student.displayname}}</h2>
+						<h3>Email: {{student.email}}</h3>
+						<h6>Wallet: {{student.wallet}}</h6>
+						<p>Kind: {{student.kind}}</p>
+						<div>
+							<p>Month: {{student.pool_month}}</p>
+							<p>Year: {{student.pool_year}}</p>
+						</div>
+					</div>
+				</div>
+				<!-- <div>{{student}}</div> -->
+			{% endfor %}
+		</main>
+	</body>
+</html>
