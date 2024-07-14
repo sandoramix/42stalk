@@ -18,14 +18,9 @@ def StudentsAPI():
 
 @app.route("/")
 def Homepage():
-	return render_template("index.html")
-
-
-@app.route("/students")
-def StudentsPage():
 	students = StudentsAPI()
 	if len(students) == 0:
-		return render_template("students.html", students=[])
+		return render_template("index.html", students=[])
 
 	studentKeys = [str(i).lower() for i in students[0].keys()]
 	args = request.args
@@ -37,9 +32,11 @@ def StudentsPage():
 		filtered = [stud for stud in filtered
 	   		if (val == stud[arg]
 			or ((isinstance(stud[arg], list) or isinstance(stud[arg], str)) and val in stud[arg]))
+			or (not (isinstance(stud[arg], list) or isinstance(stud[arg], str)) and val in str(stud[arg]))
 		]
 	print(f'{len(filtered)=}')
-	return render_template("students.html", students=filtered)
+	return render_template("index.html", students=filtered)
+
 
 @app.route('/favicon.ico')
 def favicon():
