@@ -31,8 +31,9 @@ def Homepage():
 		print(f"{arg=}\t{val=}\t{len(filtered)=}")
 		filtered = [stud for stud in filtered
 	   		if (val == stud[arg]
-			or ((isinstance(stud[arg], list) or isinstance(stud[arg], str)) and val in stud[arg]))
-			or (not (isinstance(stud[arg], list) or isinstance(stud[arg], str)) and val in str(stud[arg]))
+					or ((isinstance(stud[arg], list) or isinstance(stud[arg], str)) and val in stud[arg]))
+					or (not (isinstance(stud[arg], list) or isinstance(stud[arg], str)) and val in str(stud[arg])
+	   		)
 		]
 	print(f'{len(filtered)=}')
 	return render_template("index.html", students=filtered)
