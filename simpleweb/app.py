@@ -16,6 +16,19 @@ def StudentsAPI():
 		logging.exception(e)
 		return None
 
+
+#-------------------------------------------------------------------------------
+
+def nested(obj, attr_path):
+	attrs = attr_path.split('.')
+	current_obj = obj
+	try:
+		for attr in attrs:
+			current_obj = current_obj[attr]
+		return current_obj
+	except Exception:
+		return None
+
 @app.route("/")
 def Homepage():
 	students = StudentsAPI()
@@ -26,18 +39,17 @@ def Homepage():
 	args = request.args
 	filtered = students
 	for arg,val in args.items():
-		if arg.lower() not in studentKeys:
-			continue
 		print(f"{arg=}\t{val=}\t{len(filtered)=}")
 		filtered = [stud for stud in filtered
-	   		if (val == stud[arg]
-					or ((isinstance(stud[arg], list) or isinstance(stud[arg], str)) and val in stud[arg]))
-					or (not (isinstance(stud[arg], list) or isinstance(stud[arg], str)) and val in str(stud[arg])
-	   		)
+	   		if (val == nested(stud, arg)
+					or ((isinstance(nested(stud, arg), list) or isinstance(nested(stud, arg), str)) and val in nested(stud, arg)))
+					or (not (isinstance(nested(stud, arg), list) or isinstance(nested(stud, arg), str)) and val in str(nested(stud, arg))
+			)
 		]
 	print(f'{len(filtered)=}')
 	return render_template("index.html", students=filtered)
 
+#-------------------------------------------------------------------------------
 
 @app.route('/favicon.ico')
 def favicon():
