@@ -1,49 +1,85 @@
 <html lang="en">
-<head>
-	<meta charset="UTF-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<script src="https://cdn.tailwindcss.com"></script>
-	<link rel="shortcut icon" href="{{ url_for('static', filename='42.jpg') }}">
-	<title>
-	{% if title|length %}
-		{{title}}
-	{% else %}
-		Students
-	{% endif %}
-	</title>
-</head>
-	<body class="w-full h-full bg-neutral-100 p-0 m-0 text-center">
+	<head>
+		<meta charset="UTF-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<script src="https://cdn.tailwindcss.com"></script>
+		<link rel="stylesheet" href="{{ url_for('static', filename='/fawesome/css/font-awesome.min.css')}}">
+
+		<link rel="shortcut icon" href="{{ url_for('static', filename='42.jpg') }}">
+		<title>
+			{% if title|length %}
+			{{title}}
+			{% else %}
+			Students
+			{% endif %}
+		</title>
+		</head>
+	<body class="w-screen h-screen p-0 m-0 text-center bg-neutral-100">
 		<div>
-			<h1 class="text-xl font-serif">42 Firenze students list</h1>
+			<h1 class="font-serif text-xl">42 Firenze students list</h1>
 			<div>Total {{students | length}}</div>
 		</div>
 		<main class="px-6 py-3 space-y-4">
 			{% for student in students %}
-				<div class="flex w-full px-4 py-2 border border-gray-400 text-left">
-					<a href="https://profile.intra.42.fr/users/{{student.login}}" target="_blank" referrer="noreferrer">
-						{% if student.image.link %}
-							<img src="{{student.image.link}}" class="h-72 max-w-44 object-scale-down"/>
-						{%else%}
-							<img src="/static/placeholder-user.png" class="h-72 max-w-44 object-scale-down"/>
-						{%endif%}
-						<h1>{{student.login}}</h1>
-					</a>
-					<div class="flex flex-col justify-center gap-2">
-						<h2 class="flex gap-1"> <span class="select-none" title="displayname">Display name:</span class="select-none">{{student.displayname}}</h2>
-						<h3 class="flex gap-1"> <span class="select-none" title="email">Email:</span class="select-none">{{student.email}}</h3>
-						<h6 class="flex gap-1"> <span class="select-none" title="wallet">Wallet:</span class="select-none">{{student.wallet}}</h6>
-						<p class="flex gap-1"><span class="select-none" title="kind">Kind:</span class="select-none">{{student.kind}}</p>
-						<div>
-							<p class="flex gap-1"> <span class="select-none" title="pool_month">Month:</span class="select-none">{{student.pool_month}}</p>
-							<p class="flex gap-1"> <span class="select-none" title="pool_year">Year:</span class="select-none">{{student.pool_year}}</p>
-						</div>
+			<div class="flex w-full px-4 py-2 text-left border border-gray-400">
+
+				<a href="https://profile.intra.42.fr/users/{{student.login}}" target="_blank" referrer="noreferrer">
+					{% if student.image.link %}
+					<img src="{{student.image.link}}" class="object-scale-down h-72 max-w-44" />
+					{%else%}
+					<img src="/static/placeholder-user.png" class="object-scale-down h-72 max-w-44" />
+					{%endif%}
+					<h1>{{student.login}}</h1>
+				</a>
+				<div class="flex flex-col justify-center gap-2 px-3 py-1">
+					<i onclick='studinfo({{student | tojson}})' class="cursor-pointer fa fa-info-circle" title="get a better preview" aria-hidden="true"></i>
+
+					<h2 class="flex gap-1"> <span class="select-none" title="displayname">Display name:</span class="select-none">{{student.displayname}}</h2>
+					<h3 class="flex gap-1"> <span class="select-none" title="email">Email:</span class="select-none">{{student.email}}</h3>
+					<h6 class="flex gap-1"> <span class="select-none" title="wallet">Wallet:</span class="select-none">{{student.wallet}}</h6>
+					<p class="flex gap-1"><span class="select-none" title="kind">Kind:</span class="select-none">{{student.kind}}</p>
+					<div>
+						<p class="flex gap-1"> <span class="select-none" title="pool_month">Month:</span class="select-none">{{student.pool_month}}</p>
+						<p class="flex gap-1"> <span class="select-none" title="pool_year">Year:</span class="select-none">{{student.pool_year}}</p>
 					</div>
 				</div>
-				<!-- <div>{{student}}</div> -->
+			</div>
 			{% endfor %}
 		</main>
-		<fieldset class="font-mono text-left border border-neutral-500 m-4 p-4 sm:mx-6 sm:my-5">
-			<legend class="font-bold font-serif text-xl"> Available attributes </legend>
+		<div id="overlay" onclick="toggleModal()" class="fixed top-0 left-0 z-40 hidden w-full h-full backdrop-brightness-90"></div>
+		<div id="modal" class="fixed z-50 hidden w-10/12 max-w-screen-lg px-5 py-3 overflow-y-auto -translate-x-1/2 -translate-y-1/2 border-2 border-black top-1/2 left-1/2 h-5/6 bg-neutral-200 overscroll-contain">
+			<h3 class="font-mono text-xl font-bold"> USER OVERVIEW </h3>
+			<h4 data-key="login" class="font-sans text-base"> </h4>
+			<div class="max-w-full space-y-3 text-justify text-ellipsis font-[Consolas]">
+				<pre><span class="font-semibold">id</span>:<span data-key="id"></span>,</pre>
+				<pre><span class="font-semibold">email</span>:<span data-key="email"></span>,</pre>
+				<pre><span class="font-semibold">login</span>:<span data-key="login"></span>,</pre>
+				<pre><span class="font-semibold">first_name</span>:<span data-key="first_name"></span>,</pre>
+				<pre><span class="font-semibold">last_name</span>:<span data-key="last_name"></span>,</pre>
+				<pre><span class="font-semibold">usual_full_name</span>:<span data-key="usual_full_name"></span>,</pre>
+				<pre><span class="font-semibold">usual_first_name</span>:<span data-key="usual_first_name"></span>,</pre>
+				<pre><span class="font-semibold">url</span>:<span data-key="url"></span>,</pre>
+				<pre><span class="font-semibold">image</span>:<span data-key="image"></span>,</pre>
+				<pre><span class="font-semibold">phone</span>:<span data-key="phone"></span>,</pre>
+				<pre><span class="font-semibold">displayname</span>:<span data-key="displayname"></span>,</pre>
+				<pre><span class="font-semibold">kind</span>:<span data-key="kind"></span>,</pre>
+				<pre><span class="font-semibold">staff<span class="text-red-500">?</span></span>: <span data-key="staff"></span>,</pre>
+				<pre><span class="font-semibold">correction_point</span>:<span data-key="correction_point"></span>,</pre>
+				<pre><span class="font-semibold">pool_month</span>:<span data-key="pool_month"></span>,</pre>
+				<pre><span class="font-semibold">pool_year</span>:<span data-key="pool_year"></span>,</pre>
+				<pre><span class="font-semibold">location</span>:<span data-key="location"></span>,</pre>
+				<pre><span class="font-semibold">wallet</span>:<span data-key="wallet"></span>,</pre>
+				<pre><span class="font-semibold">anonymize_date</span>:<span data-key="anonymize_date"></span>,</pre>
+				<pre><span class="font-semibold">data_erasure_date</span>:<span data-key="data_erasure_date"></span>,</pre>
+				<pre><span class="font-semibold">created_at</span>:<span data-key="created_at"></span>,</pre>
+				<pre><span class="font-semibold">updated_at</span>:<span data-key="updated_at"></span>,</pre>
+				<pre><span class="font-semibold">alumnized_at</span>:<span data-key="alumnized_at"></span>,</pre>
+				<pre><span class="font-semibold">alumni<span class="text-red-500">?</span></span>: <span data-key="alumni"></span>,</pre>
+				<pre><span class="font-semibold">active<span class="text-red-500">?</span></span>: <span data-key="active"></span>,</pre>
+			</div>
+		</div>
+		<fieldset class="p-4 m-4 font-mono text-left border border-neutral-500 sm:mx-6 sm:my-5">
+			<legend class="font-serif text-xl font-bold"> Available attributes </legend>
 			<pre class="">
 				<span class="font-semibold">id</span>: number,
 				<span class="font-semibold">email</span>: string,
@@ -71,5 +107,28 @@
 				<span class="font-semibold">active<span class="text-red-500">?</span></span>: boolean,
 			</pre>
 		</fieldset>
+
+	 <script>
+		const keys = ["id", "email", "login", "first_name", "last_name", "usual_full_name", "usual_first_name", "url", "image", "phone", "displayname", "kind", "staff", "correction_point", "pool_month", "pool_year", "location", "wallet", "anonymize_date", "data_erasure_date", "created_at", "updated_at", "alumnized_at", "alumni", "active"];
+		const modal = document.querySelector('#modal');
+		const overlay = document.querySelector('#overlay');
+
+
+		function studinfo(student){
+			for (let key of keys){
+				const spanEl = modal.querySelectorAll(`[data-key="${key}"]`);
+				if (!spanEl || !spanEl.length){
+					console.debug(`Student's key=${key} not found in DOM`);
+					return;
+				}
+				spanEl.forEach(el=>el.textContent = JSON.stringify(student[key] ?? null, null, 2));
+			}
+			toggleModal();
+		}
+		function toggleModal(){
+			overlay.classList.toggle('!block');
+			modal.classList.toggle('!block');
+		}
+	</script>
 	</body>
 </html>
