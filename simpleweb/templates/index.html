@@ -21,7 +21,7 @@
 		</div>
 		<main class="px-6 py-3 space-y-4">
 			{% for student in students %}
-			<div class="flex w-full px-4 py-2 text-left border border-gray-400">
+			<div class="flex flex-col sm:flex-row w-full px-4 py-2 text-left border border-gray-400">
 
 				<a href="https://profile.intra.42.fr/users/{{student.login}}" target="_blank" referrer="noreferrer">
 					{% if student.image.link %}
@@ -42,6 +42,45 @@
 						<p class="flex gap-1"> <span class="select-none" title="pool_month">Month:</span class="select-none">{{student.pool_month}}</p>
 						<p class="flex gap-1"> <span class="select-none" title="pool_year">Year:</span class="select-none">{{student.pool_year}}</p>
 					</div>
+
+				</div>
+				<div class="flex flex-col justify-center gap-2 px-3 py-1 grow">
+					<div>
+						Average final mark: <span>{{ student.average_final_mark }}</span>
+					</div>
+
+					{% if student.currentExams and student.currentExams|length %}
+
+
+					<div class="flex flex-col justify-center gap-2 px-3 py-1">
+						<table class="table-auto w-full">
+							<thead>
+								<tr>
+									<th class="text-left">Name</th>
+									<th class="text-left">Status</th>
+									<th class="text-left">Final mark</th>
+									<th class="text-left">Occurrence</th>
+									<th class="text-left">Validated?</th>
+								</tr>
+							</thead>
+							<tbody>
+								{% for exam in student.currentExams %}
+								<tr>
+									<td class="text-left">{{exam.project.name}}</td>
+									<td class="text-left">{{exam.status}}</td>
+									<td class="text-left">{{exam.final_mark}}</td>
+									<td class="text-left">{{exam.occurrence}}</td>
+									<td class="text-left">{{exam.validated}}</td>
+								</tr>
+								{% endfor %}
+							</tbody>
+						</table>
+					</div>
+					{% else %}
+					<div class="flex flex-col justify-center gap-2 px-3 py-1">
+						<p class="text-center">No current exams</p>
+					</div>
+					{% endif %}
 				</div>
 			</div>
 			{% endfor %}
@@ -76,6 +115,10 @@
 				<pre><span class="font-semibold">alumnized_at</span>:<span data-key="alumnized_at"></span>,</pre>
 				<pre><span class="font-semibold">alumni<span class="text-red-500">?</span></span>: <span data-key="alumni"></span>,</pre>
 				<pre><span class="font-semibold">active<span class="text-red-500">?</span></span>: <span data-key="active"></span>,</pre>
+				<pre><span class="font-semibold">currentExams</span>:<span data-key="currentExams"></span>,</pre>
+				<pre><span class="font-semibold">fetchExams</span>:<span data-key="fetchExams"></span>,</pre>
+				<pre><span class="font-semibold">failedFetchExams</span>:<span data-key="failedFetchExams"></span>,</pre>
+
 			</div>
 		</div>
 		<fieldset class="p-4 m-4 font-mono text-left border border-neutral-500 sm:mx-6 sm:my-5">
@@ -109,7 +152,7 @@
 		</fieldset>
 
 	 <script>
-		const keys = ["id", "email", "login", "first_name", "last_name", "usual_full_name", "usual_first_name", "url", "image", "phone", "displayname", "kind", "staff", "correction_point", "pool_month", "pool_year", "location", "wallet", "anonymize_date", "data_erasure_date", "created_at", "updated_at", "alumnized_at", "alumni", "active"];
+		const keys = ["id", "email", "login", "first_name", "last_name", "usual_full_name", "usual_first_name", "url", "image", "phone", "displayname", "kind", "staff", "correction_point", "pool_month", "pool_year", "location", "wallet", "anonymize_date", "data_erasure_date", "created_at", "updated_at", "alumnized_at", "alumni", "active", "currentExams", "fetchExams", "failedFetchExams"];
 		const modal = document.querySelector('#modal');
 		const overlay = document.querySelector('#overlay');
 
@@ -121,7 +164,26 @@
 					console.debug(`Student's key=${key} not found in DOM`);
 					return;
 				}
-				spanEl.forEach(el=>el.textContent = JSON.stringify(student[key] ?? null, null, 2));
+				spanEl.forEach(el=>{
+					if (key == "currentExams"){
+						let html = "";
+						console.log(student[key]);
+						if (!student[key]?.length){
+							return;
+						}
+						for (let exam of student[key]){
+							html += `<div class="flex gap-1">
+								<span class="select-none" title="status">Status:</span class="select-none">${exam.status}</span>
+								<span class="select-none" title="final_mark">Final mark:</span class="select-none">${exam.final_mark}</span>
+								<span class="select-none" title="occurrence">Occurrence:</span class="select-none">${exam.occurrence}</span>
+								<span class="select-none" title="validated?">Validated?:</span class="select-none">${exam.validated}</span>
+							</div>`;
+						}
+						el.innerHTML = html;
+						return;
+					}
+					el.textContent = JSON.stringify(student[key] ?? null, null, 2)
+				});
 			}
 			toggleModal();
 		}

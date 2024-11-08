@@ -2,9 +2,14 @@ import json
 from api import API
 from constants import JSON_EXAM_STUDENTS
 
-PISCINE_EXAM = 18473
+PISCINE_EXAM = 20933
 
-result = API.getExamExamsUsers(PISCINE_EXAM)
+#API.getExamByID(20933)
+
+
+#result = API.getExamByID(PISCINE_EXAM)
+
+result = API.getUserByID(205910)
 
 print(f"Loaded {len(result)} students")
 with open(JSON_EXAM_STUDENTS, "w+") as file:
