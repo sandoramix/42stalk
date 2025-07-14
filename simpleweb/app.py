@@ -145,7 +145,7 @@ def Homepage():
 		result = invalidateCache(filteredList=result)
 		print(f'invalidated-{len(result)=}')
 	for user in result:
-		user['currentExams'] = [e for e in user['currentExams'] if examNameFilter in e['project']['slug'].lower()]
+		user['currentExams'] = [e for e in user.get('currentExams', []) if examNameFilter in e['project']['slug'].lower()]
 		user['average_final_mark'] = get_average_final_mark(user)
 	result = sort_by_exam_final_grade_and_login(result)
 	return render_template("index.html", students=result)
