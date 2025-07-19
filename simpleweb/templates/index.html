@@ -1,196 +1,161 @@
 <html lang="en">
-	<head>
-		<meta charset="UTF-8">
-		<meta name="viewport" content="width=device-width, initial-scale=1.0">
-		<script src="https://cdn.tailwindcss.com"></script>
-		<link rel="stylesheet" href="{{ url_for('static', filename='/fawesome/css/font-awesome.min.css')}}">
 
-		<link rel="shortcut icon" href="{{ url_for('static', filename='42.jpg') }}">
-		<title>
-			{% if title|length %}
-			{{title}}
-			{% else %}
-			Students
-			{% endif %}
-		</title>
-		</head>
-	<body class="w-screen h-screen p-0 m-0 text-center bg-neutral-100">
-		<div>
-			<h1 class="font-serif text-xl">42 Firenze students list</h1>
-			<div>Total {{students | length}}</div>
-		</div>
-		<main class="px-6 py-3 space-y-4">
-			{% for student in students %}
-			<div class="flex flex-col sm:flex-row w-full px-4 py-2 text-left border border-gray-400">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<script src="https://cdn.tailwindcss.com"></script>
+	<link rel="stylesheet" href="{{ url_for('static', filename='/fawesome/css/font-awesome.min.css')}}">
 
-				<a href="https://profile.intra.42.fr/users/{{student.login}}" target="_blank" referrer="noreferrer">
-					{% if student.image.link %}
-					<img src="{{student.image.link}}" class="object-scale-down h-72 max-w-44" />
-					{%else%}
-					<img src="/static/placeholder-user.png" class="object-scale-down h-72 max-w-44" />
-					{%endif%}
-					<h1>{{student.login}}</h1>
-				</a>
+	<link rel="shortcut icon" href="{{ url_for('static', filename='42.jpg') }}">
+	<title>
+		{% if title|length %}
+		{{title}}
+		{% else %}
+		Students
+		{% endif %}
+	</title>
+</head>
+
+<body class="w-screen h-screen p-0 m-0 text-center bg-neutral-100">
+	<div>
+		<h1 class="font-serif text-xl">42 Firenze students list</h1>
+		<div>Total {{students | length}}</div>
+	</div>
+	<main class="px-6 py-3 space-y-4">
+		{% for student in students %}
+		<div class="flex flex-col sm:flex-row w-full px-4 py-2 text-left border border-gray-400">
+
+			<a href="https://profile.intra.42.fr/users/{{student.login}}" target="_blank" referrer="noreferrer">
+				{% if student.image.link %}
+				<img src="{{student.image.link}}" class="object-scale-down h-72 max-w-44" />
+				{%else%}
+				<img src="/static/placeholder-user.png" class="object-scale-down h-72 max-w-44" />
+				{%endif%}
+				<h1>{{student.login}}</h1>
+			</a>
+			<div class="flex flex-col justify-center gap-2 px-3 py-1">
+				<i onclick='studinfo({{student | tojson}})' class="cursor-pointer fa fa-info-circle"
+					title="get a better preview" aria-hidden="true"></i>
+
+				<h2 class="flex gap-1"> <span class="select-none" title="displayname">Display name:</span
+						class="select-none">{{student.displayname}}</h2>
+				<h3 class="flex gap-1"> <span class="select-none" title="email">Email:</span
+						class="select-none">{{student.email}}</h3>
+				<h6 class="flex gap-1"> <span class="select-none" title="wallet">Wallet:</span
+						class="select-none">{{student.wallet}}</h6>
+				<p class="flex gap-1"><span class="select-none" title="kind">Kind:</span
+						class="select-none">{{student.kind}}</p>
+				<div>
+					<p class="flex gap-1"> <span class="select-none" title="pool_month">Month:</span
+							class="select-none">{{student.pool_month}}</p>
+					<p class="flex gap-1"> <span class="select-none" title="pool_year">Year:</span
+							class="select-none">{{student.pool_year}}</p>
+				</div>
+
+			</div>
+			<div class="flex flex-col justify-center gap-2 px-3 py-1 grow">
+				<div>
+					Average final mark: <span>{{ student.average_final_mark }}</span>
+				</div>
+
+				{% if student.currentExams and student.currentExams|length %}
+
+
 				<div class="flex flex-col justify-center gap-2 px-3 py-1">
-					<i onclick='studinfo({{student | tojson}})' class="cursor-pointer fa fa-info-circle" title="get a better preview" aria-hidden="true"></i>
-
-					<h2 class="flex gap-1"> <span class="select-none" title="displayname">Display name:</span class="select-none">{{student.displayname}}</h2>
-					<h3 class="flex gap-1"> <span class="select-none" title="email">Email:</span class="select-none">{{student.email}}</h3>
-					<h6 class="flex gap-1"> <span class="select-none" title="wallet">Wallet:</span class="select-none">{{student.wallet}}</h6>
-					<p class="flex gap-1"><span class="select-none" title="kind">Kind:</span class="select-none">{{student.kind}}</p>
-					<div>
-						<p class="flex gap-1"> <span class="select-none" title="pool_month">Month:</span class="select-none">{{student.pool_month}}</p>
-						<p class="flex gap-1"> <span class="select-none" title="pool_year">Year:</span class="select-none">{{student.pool_year}}</p>
-					</div>
-
+					<table class="table-auto w-full">
+						<thead>
+							<tr>
+								<th class="text-left">Name</th>
+								<th class="text-left">Status</th>
+								<th class="text-left">Final mark</th>
+								<th class="text-left">Occurrence</th>
+								<th class="text-left">Validated?</th>
+							</tr>
+						</thead>
+						<tbody>
+							{% for exam in student.currentExams %}
+							<tr>
+								<td class="text-left">{{exam.project.name}}</td>
+								<td class="text-left">{{exam.status}}</td>
+								<td class="text-left">{{exam.final_mark}}</td>
+								<td class="text-left">{{exam.occurrence}}</td>
+								<td class="text-left">{{exam.validated}}</td>
+							</tr>
+							{% endfor %}
+						</tbody>
+					</table>
 				</div>
-				<div class="flex flex-col justify-center gap-2 px-3 py-1 grow">
-					<div>
-						Average final mark: <span>{{ student.average_final_mark }}</span>
-					</div>
-
-					{% if student.currentExams and student.currentExams|length %}
-
-
-					<div class="flex flex-col justify-center gap-2 px-3 py-1">
-						<table class="table-auto w-full">
-							<thead>
-								<tr>
-									<th class="text-left">Name</th>
-									<th class="text-left">Status</th>
-									<th class="text-left">Final mark</th>
-									<th class="text-left">Occurrence</th>
-									<th class="text-left">Validated?</th>
-								</tr>
-							</thead>
-							<tbody>
-								{% for exam in student.currentExams %}
-								<tr>
-									<td class="text-left">{{exam.project.name}}</td>
-									<td class="text-left">{{exam.status}}</td>
-									<td class="text-left">{{exam.final_mark}}</td>
-									<td class="text-left">{{exam.occurrence}}</td>
-									<td class="text-left">{{exam.validated}}</td>
-								</tr>
-								{% endfor %}
-							</tbody>
-						</table>
-					</div>
-					{% else %}
-					<div class="flex flex-col justify-center gap-2 px-3 py-1">
-						<p class="text-center">No current exams</p>
-					</div>
-					{% endif %}
+				{% else %}
+				<div class="flex flex-col justify-center gap-2 px-3 py-1">
+					<p class="text-center">No current exams</p>
 				</div>
-			</div>
-			{% endfor %}
-		</main>
-		<div id="overlay" onclick="toggleModal()" class="fixed top-0 left-0 z-40 hidden w-full h-full backdrop-brightness-90"></div>
-		<div id="modal" class="fixed z-50 hidden w-10/12 max-w-screen-lg px-5 py-3 overflow-y-auto -translate-x-1/2 -translate-y-1/2 border-2 border-black top-1/2 left-1/2 h-5/6 bg-neutral-200 overscroll-contain">
-			<h3 class="font-mono text-xl font-bold"> USER OVERVIEW </h3>
-			<h4 data-key="login" class="font-sans text-base"> </h4>
-			<div class="max-w-full space-y-3 text-justify text-ellipsis font-[Consolas]">
-				<pre><span class="font-semibold">id</span>:<span data-key="id"></span>,</pre>
-				<pre><span class="font-semibold">email</span>:<span data-key="email"></span>,</pre>
-				<pre><span class="font-semibold">login</span>:<span data-key="login"></span>,</pre>
-				<pre><span class="font-semibold">first_name</span>:<span data-key="first_name"></span>,</pre>
-				<pre><span class="font-semibold">last_name</span>:<span data-key="last_name"></span>,</pre>
-				<pre><span class="font-semibold">usual_full_name</span>:<span data-key="usual_full_name"></span>,</pre>
-				<pre><span class="font-semibold">usual_first_name</span>:<span data-key="usual_first_name"></span>,</pre>
-				<pre><span class="font-semibold">url</span>:<span data-key="url"></span>,</pre>
-				<pre><span class="font-semibold">image</span>:<span data-key="image"></span>,</pre>
-				<pre><span class="font-semibold">phone</span>:<span data-key="phone"></span>,</pre>
-				<pre><span class="font-semibold">displayname</span>:<span data-key="displayname"></span>,</pre>
-				<pre><span class="font-semibold">kind</span>:<span data-key="kind"></span>,</pre>
-				<pre><span class="font-semibold">staff<span class="text-red-500">?</span></span>: <span data-key="staff"></span>,</pre>
-				<pre><span class="font-semibold">correction_point</span>:<span data-key="correction_point"></span>,</pre>
-				<pre><span class="font-semibold">pool_month</span>:<span data-key="pool_month"></span>,</pre>
-				<pre><span class="font-semibold">pool_year</span>:<span data-key="pool_year"></span>,</pre>
-				<pre><span class="font-semibold">location</span>:<span data-key="location"></span>,</pre>
-				<pre><span class="font-semibold">wallet</span>:<span data-key="wallet"></span>,</pre>
-				<pre><span class="font-semibold">anonymize_date</span>:<span data-key="anonymize_date"></span>,</pre>
-				<pre><span class="font-semibold">data_erasure_date</span>:<span data-key="data_erasure_date"></span>,</pre>
-				<pre><span class="font-semibold">created_at</span>:<span data-key="created_at"></span>,</pre>
-				<pre><span class="font-semibold">updated_at</span>:<span data-key="updated_at"></span>,</pre>
-				<pre><span class="font-semibold">alumnized_at</span>:<span data-key="alumnized_at"></span>,</pre>
-				<pre><span class="font-semibold">alumni<span class="text-red-500">?</span></span>: <span data-key="alumni"></span>,</pre>
-				<pre><span class="font-semibold">active<span class="text-red-500">?</span></span>: <span data-key="active"></span>,</pre>
-				<pre><span class="font-semibold">currentExams</span>:<span data-key="currentExams"></span>,</pre>
-				<pre><span class="font-semibold">fetchExams</span>:<span data-key="fetchExams"></span>,</pre>
-				<pre><span class="font-semibold">failedFetchExams</span>:<span data-key="failedFetchExams"></span>,</pre>
-
+				{% endif %}
 			</div>
 		</div>
-		<fieldset class="p-4 m-4 font-mono text-left border border-neutral-500 sm:mx-6 sm:my-5">
-			<legend class="font-serif text-xl font-bold"> Available attributes </legend>
-			<pre class="">
-				<span class="font-semibold">id</span>: number,
-				<span class="font-semibold">email</span>: string,
-				<span class="font-semibold">login</span>: string,
-				<span class="font-semibold">first_name</span>: string,
-				<span class="font-semibold">last_name</span>: string,
-				<span class="font-semibold">usual_full_name</span>: string,
-				<span class="font-semibold">usual_first_name</span>: string,
-				<span class="font-semibold">url</span>: string,
-				<span class="font-semibold">phone</span>: string,
-				<span class="font-semibold">displayname</span>: string,
-				<span class="font-semibold">kind</span>: string,
-				<span class="font-semibold">staff<span class="text-red-500">?</span></span>: boolean,
-				<span class="font-semibold">correction_point</span>: number,
-				<span class="font-semibold">pool_month</span>: string,
-				<span class="font-semibold">pool_year</span>: string,
-				<span class="font-semibold">location</span>: string,
-				<span class="font-semibold">wallet</span>: number,
-				<span class="font-semibold">anonymize_date</span>: string,
-				<span class="font-semibold">data_erasure_date</span>: string,
-				<span class="font-semibold">created_at</span>: string,
-				<span class="font-semibold">updated_at</span>: string,
-				<span class="font-semibold">alumnized_at</span>: string,
-				<span class="font-semibold">alumni<span class="text-red-500">?</span></span>: boolean,
-				<span class="font-semibold">active<span class="text-red-500">?</span></span>: boolean,
+		{% endfor %}
+	</main>
+	<div id="overlay" onclick="toggleModal()"
+		class="fixed top-0 left-0 z-40 hidden w-full h-full backdrop-brightness-90"></div>
+	<div id="modal"
+		class="fixed z-50 hidden w-10/12 max-w-screen-lg px-5 py-3 overflow-y-auto -translate-x-1/2 -translate-y-1/2 border-2 border-black top-1/2 left-1/2 h-5/6 bg-neutral-200 overscroll-contain">
+		<h3 class="font-mono text-xl font-bold"> USER OVERVIEW </h3>
+		<h4 id="modal-login" class="font-sans text-base"></h4>
+		<div id="student-details" class="max-w-full space-y-3 text-justify text-ellipsis font-[Consolas]"></div>
+	</div>
+	<fieldset class="p-4 m-4 font-mono text-left border border-neutral-500 sm:mx-6 sm:my-5">
+		<legend class="font-serif text-xl font-bold"> Available attributes </legend>
+		<pre>
+				{% for field in fields %}
+					<span class="font-semibold">{{ field.name }}{% if field.nullable %}<span class="text-red-500">?</span>{% endif %}</span><span>: {{ field.type }},</span>
+				{% endfor %}
 			</pre>
-		</fieldset>
+	</fieldset>
 
-	 <script>
-		const keys = ["id", "email", "login", "first_name", "last_name", "usual_full_name", "usual_first_name", "url", "image", "phone", "displayname", "kind", "staff", "correction_point", "pool_month", "pool_year", "location", "wallet", "anonymize_date", "data_erasure_date", "created_at", "updated_at", "alumnized_at", "alumni", "active", "currentExams", "fetchExams", "failedFetchExams"];
+	<script>
 		const modal = document.querySelector('#modal');
 		const overlay = document.querySelector('#overlay');
+		const container = document.querySelector('#student-details');
+		const modalLogin = document.querySelector('#modal-login');
 
-
-		function studinfo(student){
-			for (let key of keys){
-				const spanEl = modal.querySelectorAll(`[data-key="${key}"]`);
-				if (!spanEl || !spanEl.length){
-					console.debug(`Student's key=${key} not found in DOM`);
-					return;
+		function renderField(key, value, indent = 0) {
+			const pad = '&nbsp;'.repeat(indent * 2);
+			if (value === null || typeof value === 'number' || typeof value === 'boolean') {
+				return `<pre>${pad}<span class="font-semibold">${key}</span>: <span>${value}</span>,</pre>`;
+			} else if (typeof value === 'string') {
+				return `<pre>${pad}<span class="font-semibold">${key}</span>: <span>"${value}"</span>,</pre>`;
+			} else if (Array.isArray(value)) {
+				let html = `<pre>${pad}<span class="font-semibold">${key}</span>: [</pre>`;
+				for (let i = 0; i < value.length; i++) {
+					html += renderField(i, value[i], indent + 1);
 				}
-				spanEl.forEach(el=>{
-					if (key == "currentExams"){
-						let html = "";
-						console.log(student[key]);
-						if (!student[key]?.length){
-							return;
-						}
-						for (let exam of student[key]){
-							html += `<div class="flex gap-1">
-								<span class="select-none" title="status">Status:</span class="select-none">${exam.status}</span>
-								<span class="select-none" title="final_mark">Final mark:</span class="select-none">${exam.final_mark}</span>
-								<span class="select-none" title="occurrence">Occurrence:</span class="select-none">${exam.occurrence}</span>
-								<span class="select-none" title="validated?">Validated?:</span class="select-none">${exam.validated}</span>
-							</div>`;
-						}
-						el.innerHTML = html;
-						return;
-					}
-					el.textContent = JSON.stringify(student[key] ?? null, null, 2)
-				});
+				html += `<pre>${pad}]</pre>`;
+				return html;
+			} else if (typeof value === 'object') {
+				let html = `<pre>${pad}<span class="font-semibold">${key}</span>: {</pre>`;
+				for (let subkey in value) {
+					html += renderField(subkey, value[subkey], indent + 1);
+				}
+				html += `<pre>${pad}}</pre>`;
+				return html;
 			}
+			return `<pre>${pad}<span class="font-semibold">${key}</span>: <span>${String(value)}</span>,</pre>`;
+		}
+		function studinfo(student) {
+			container.innerHTML = ''; // Clear previous content
+			modalLogin.textContent = student.login ?? '[no login]';
+
+			for (let key in student) {
+				container.innerHTML += renderField(key, student[key]);
+			}
+
 			toggleModal();
 		}
-		function toggleModal(){
+
+		function toggleModal() {
 			overlay.classList.toggle('!block');
 			modal.classList.toggle('!block');
 		}
 	</script>
-	</body>
+</body>
+
 </html>
