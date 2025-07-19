@@ -5,7 +5,7 @@ import logging
 
 
 
-load_dotenv("/nfs/sgoinfre/goinfre/Perso/odudniak/stuff/python/42api/.env")
+load_dotenv(".env")
 
 LOG = logging.getLogger()
 
