@@ -5,6 +5,7 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<script src="https://cdn.tailwindcss.com"></script>
 	<link rel="stylesheet" href="{{ url_for('static', filename='/fawesome/css/font-awesome.min.css')}}">
+	<link rel="stylesheet" href="{{ url_for('static', filename='/styles.css')}}">
 
 	<link rel="shortcut icon" href="{{ url_for('static', filename='42.jpg') }}">
 	<title>
@@ -16,137 +17,86 @@
 	</title>
 </head>
 
-<body class="w-screen h-screen p-0 m-0 text-center bg-neutral-100">
-	<div>
-		<h1 class="font-serif text-xl">42 Firenze students list</h1>
-		<div>Total {{students | length}}</div>
-	</div>
-	<main class="px-6 py-3 space-y-4">
-		{% for student in students %}
-		<div class="flex flex-col sm:flex-row w-full px-4 py-2 text-left border border-gray-400">
-
-			<a href="https://profile.intra.42.fr/users/{{student.login}}" target="_blank" referrer="noreferrer">
-				{% if student.image.link %}
-				<img src="{{student.image.link}}" class="object-scale-down h-72 max-w-44" />
-				{%else%}
-				<img src="/static/placeholder-user.png" class="object-scale-down h-72 max-w-44" />
-				{%endif%}
-				<h1>{{student.login}}</h1>
-			</a>
-			<div class="flex flex-col justify-center gap-2 px-3 py-1">
-				<i onclick='studinfo({{student | tojson}})' class="cursor-pointer fa fa-info-circle"
-					title="get a better preview" aria-hidden="true"></i>
-
-				<h2 class="flex gap-1"> <span class="select-none" title="displayname">Display name:</span
-						class="select-none">{{student.displayname}}</h2>
-				<h3 class="flex gap-1"> <span class="select-none" title="email">Email:</span
-						class="select-none">{{student.email}}</h3>
-				<h6 class="flex gap-1"> <span class="select-none" title="wallet">Wallet:</span
-						class="select-none">{{student.wallet}}</h6>
-				<p class="flex gap-1"><span class="select-none" title="kind">Kind:</span
-						class="select-none">{{student.kind}}</p>
-				<div>
-					<p class="flex gap-1"> <span class="select-none" title="pool_month">Month:</span
-							class="select-none">{{student.pool_month}}</p>
-					<p class="flex gap-1"> <span class="select-none" title="pool_year">Year:</span
-							class="select-none">{{student.pool_year}}</p>
-				</div>
-
-			</div>
-			<div class="flex flex-col justify-center gap-2 px-3 py-1 grow">
-				<div>
-					Average final mark: <span>{{ student.average_final_mark }}</span>
-				</div>
-
-				{% if student.currentExams and student.currentExams|length %}
-
-
-				<div class="flex flex-col justify-center gap-2 px-3 py-1">
-					<table class="table-auto w-full">
-						<thead>
-							<tr>
-								<th class="text-left">Name</th>
-								<th class="text-left">Status</th>
-								<th class="text-left">Final mark</th>
-								<th class="text-left">Occurrence</th>
-								<th class="text-left">Validated?</th>
-							</tr>
-						</thead>
-						<tbody>
-							{% for exam in student.currentExams %}
-							<tr>
-								<td class="text-left">{{exam.project.name}}</td>
-								<td class="text-left">{{exam.status}}</td>
-								<td class="text-left">{{exam.final_mark}}</td>
-								<td class="text-left">{{exam.occurrence}}</td>
-								<td class="text-left">{{exam.validated}}</td>
-							</tr>
-							{% endfor %}
-						</tbody>
-					</table>
-				</div>
-				{% else %}
-				<div class="flex flex-col justify-center gap-2 px-3 py-1">
-					<p class="text-center">No current exams</p>
-				</div>
-				{% endif %}
-			</div>
-		</div>
-		{% endfor %}
-	</main>
-	<div id="overlay" onclick="toggleModal()"
-		class="fixed top-0 left-0 z-40 hidden w-full h-full backdrop-brightness-90"></div>
-	<div id="modal"
-		class="fixed z-50 hidden w-10/12 max-w-screen-lg px-5 py-3 overflow-y-auto -translate-x-1/2 -translate-y-1/2 border-2 border-black top-1/2 left-1/2 h-5/6 bg-neutral-200 overscroll-contain">
-		<h3 class="font-mono text-xl font-bold"> USER OVERVIEW </h3>
-		<h4 id="modal-login" class="font-sans text-base"></h4>
-		<div id="student-details" class="max-w-full space-y-3 text-justify text-ellipsis font-[Consolas]"></div>
-	</div>
-	<fieldset class="p-4 m-4 font-mono text-left border border-neutral-500 sm:mx-6 sm:my-5">
-		<legend class="font-serif text-xl font-bold"> Available attributes </legend>
-		<pre>
-				{% for field in fields %}
-					<span class="font-semibold">{{ field.name }}{% if field.nullable %}<span class="text-red-500">?</span>{% endif %}</span><span>: {{ field.type }},</span>
-				{% endfor %}
-			</pre>
-	</fieldset>
-
+<body class="text-center bg-neutral-100 flex flex-col overflow-hidden">
 	<script>
-		const modal = document.querySelector('#modal');
-		const overlay = document.querySelector('#overlay');
-		const container = document.querySelector('#student-details');
-		const modalLogin = document.querySelector('#modal-login');
+
+		// JSON IDs (do not use for other purposes)
+		let jsonIdCounter = 0;
+		function getJsonId() {
+			return `json-id-${jsonIdCounter++}`;
+		}
+
+		function toggleSection(button) {
+			const container = button.closest('fieldset').querySelector('.collapsible');
+			const isExpanded = button.getAttribute('data-expanded') === 'true';
+
+			if (isExpanded) {
+				container.style.display = 'none';
+				button.textContent = '[+]';
+				button.setAttribute('data-expanded', 'false');
+			} else {
+				container.style.display = 'block';
+				button.textContent = '[−]';
+				button.setAttribute('data-expanded', 'true');
+			}
+		}
 
 		function renderField(key, value, indent = 0) {
+			const hideArrayMinLength = 10;
 			const pad = '&nbsp;'.repeat(indent * 2);
+
 			if (value === null || typeof value === 'number' || typeof value === 'boolean') {
-				return `<pre>${pad}<span class="font-semibold">${key}</span>: <span>${value}</span>,</pre>`;
+				return `<div>${pad}<span class="font-semibold">${key}</span>: <span>${value}</span>,</div>`;
 			} else if (typeof value === 'string') {
-				return `<pre>${pad}<span class="font-semibold">${key}</span>: <span>"${value}"</span>,</pre>`;
+				return `<div>${pad}<span class="font-semibold">${key}</span>: <span>"${value}"</span>,</div>`;
 			} else if (Array.isArray(value)) {
-				let html = `<pre>${pad}<span class="font-semibold">${key}</span>: [</pre>`;
+				const id = getJsonId();
+				const shouldHide = value.length >= hideArrayMinLength;
+				let html = `<div>${pad}<span class="font-semibold">${key}@${value.length}</span>: <button onclick="toggleJson('${id}')" class="text-blue-600">[${!shouldHide ? '−' : '+'}]</button></div>`;
+				html += `<div id="${id}" style="display: ${shouldHide ? 'none' : 'block'};">${pad}[`;
 				for (let i = 0; i < value.length; i++) {
 					html += renderField(i, value[i], indent + 1);
 				}
-				html += `<pre>${pad}]</pre>`;
+				html += `<div>${pad}]</div></div>`;
 				return html;
 			} else if (typeof value === 'object') {
-				let html = `<pre>${pad}<span class="font-semibold">${key}</span>: {</pre>`;
+				const id = getJsonId();
+				let html = `<div>${pad}<span class="font-semibold">${key}</span>: <button onclick="toggleJson('${id}')" class="text-blue-600">[−]</button></div>`;
+				html += `<div id="${id}" style="display: 'block';">${pad}{`;
 				for (let subkey in value) {
 					html += renderField(subkey, value[subkey], indent + 1);
 				}
-				html += `<pre>${pad}}</pre>`;
+				html += `<div>${pad}}</div></div>`;
 				return html;
 			}
-			return `<pre>${pad}<span class="font-semibold">${key}</span>: <span>${String(value)}</span>,</pre>`;
+			return `<div>${pad}<span class="font-semibold">${key}</span>: <span>${String(value)}</span>,</div>`;
 		}
+
+		function toggleJson(id) {
+			const el = document.getElementById(id);
+			if (!el) return;
+			const visible = el.style.display !== 'none';
+			el.style.display = visible ? 'none' : 'block';
+
+			// Optional: update button text
+			const button = document.querySelector(`button[onclick="toggleJson('${id}')"]`);
+			if (button) {
+				button.textContent = visible ? '[+]' : '[−]';
+			}
+		}
+
 		function studinfo(student) {
+			jsonIdCounter = 0;
 			container.innerHTML = ''; // Clear previous content
 			modalLogin.textContent = student.login ?? '[no login]';
 
+			const skipKeys = ['projects', 'exams', 'all_projects'];
+
 			for (let key in student) {
+				if (skipKeys.includes(key)) continue;
 				container.innerHTML += renderField(key, student[key]);
 			}
+			container.innerHTML += renderField('all_projects', student.all_projects);
 
 			toggleModal();
 		}
@@ -155,6 +105,170 @@
 			overlay.classList.toggle('!block');
 			modal.classList.toggle('!block');
 		}
+	</script>
+	<div class="overflow-y-auto">
+		<div>
+			<h1 class="font-serif text-xl">42 Firenze students list</h1>
+			<div>Total {{students | length}}</div>
+		</div>
+		<main class="flex flex-col gap-2 grow shrink-0">
+			{% for student in students %}
+			<div class="grid grid-cols-1 sm:grid-cols-7 min-w-0 border border-gray-400 px-3 py-1">
+				<div class="col-span-1">
+					<a href="https://profile.intra.42.fr/users/{{student.login}}" target="_blank" referrer="noreferrer">
+						{% if student.image.link %}
+						<img src="{{student.image.link}}" class="object-scale-down h-72 max-w-full " />
+						{%else%}
+						<img src="/static/placeholder-user.png" class="object-scale-down h-72 max-w-full " />
+						{%endif%}
+					</a>
+				</div>
+				<div class="flex flex-col justify-center gap-2 px-3 py-1 col-span-2">
+					<div class="flex gap-3 items-center">
+						<i onclick='studinfo({{student | tojson}})' class="cursor-pointer fa fa-info-circle text-3xl"
+							title="get a better preview" aria-hidden="true"></i>
+						<h2 class="font-bold text-xl">{{student.login}}</h2>
+					</div>
+					<h2 class="flex gap-1"> <span class="select-none" title="displayname">Display name:</span
+							class="select-none">{{student.displayname}}</h2>
+					<h3 class="flex gap-1"> <span class="select-none" title="email">Email:</span
+							class="select-none">{{student.email}}</h3>
+					<h6 class="flex gap-1"> <span class="select-none" title="wallet">Wallet:</span
+							class="select-none">{{student.wallet}}</h6>
+					<p class="flex gap-1"><span class="select-none" title="kind">Kind:</span
+							class="select-none">{{student.kind}}</p>
+					<div>
+						<p class="flex gap-1"> <span class="select-none" title="pool_month">Month:</span
+								class="select-none">{{student.pool_month}}</p>
+						<p class="flex gap-1"> <span class="select-none" title="pool_year">Year:</span
+								class="select-none">{{student.pool_year}}</p>
+					</div>
+					{% if student.average_mark %}
+					<div>
+						Average mark: <span>{{ student.average_mark }}</span>
+					</div>
+					{% endif %}
+
+				</div>
+				<div class="flex flex-col justify-center gap-2 px-3 py-1 col-span-1 sm:col-span-4">
+					<fieldset class="flex flex-col gap-2 border">
+						<legend class="font-serif text-xl font-bold flex items-center justify-between">
+							<span>Exams</span>
+							<button type="button" onclick="toggleSection(this)"
+								class="ml-2 text-sm text-blue-600 hover:underline" data-expanded="true">[−]</button>
+						</legend>
+
+						<div>
+							Average final mark: <span>{{ student.average_exam_final_mark }}</span>
+						</div>
+						<div class="collapsible" style="display: block;">
+
+							{% if student.exams and student.exams|length %}
+							<div class="flex flex-col justify-center gap-2 px-3 py-1">
+								<table class="table-auto w-full">
+									<thead>
+										<tr>
+											<th class="text-left">Name</th>
+											<th class="text-left">Status</th>
+											<th class="text-left">Final mark</th>
+											<th class="text-left">Occurrence</th>
+											<th class="text-left">Validated?</th>
+										</tr>
+									</thead>
+									<tbody>
+										{% for exam in student.exams %}
+										<tr>
+											<td class="text-left">{{ exam.project.name }}</td>
+											<td class="text-left">{{ exam.status }}</td>
+											<td class="text-left">{{ exam.final_mark }}</td>
+											<td class="text-left">{{ exam.occurrence }}</td>
+											<td class="text-left">{{ exam.validated }}</td>
+										</tr>
+										{% endfor %}
+									</tbody>
+								</table>
+							</div>
+							{% else %}
+							<div class="flex flex-col justify-center gap-2 px-3 py-1">
+								<p class="text-center">No current exams</p>
+							</div>
+							{% endif %}
+						</div>
+					</fieldset>
+
+
+					<fieldset class="flex flex-col gap-2 border">
+						<legend class="font-serif text-xl font-bold">
+							<span>Projects</span>
+							<button type="button" onclick="toggleSection(this)"
+								class="ml-2 text-sm text-blue-600 hover:underline" data-expanded="false">[+]</button>
+						</legend>
+						<div>
+							Average final mark: <span>{{ student.average_project_final_mark }}</span>
+						</div>
+						<div class="collapsible" style="display: none;">
+
+							<div class="flex flex-col justify-center gap-2 px-3 py-1">
+								{% if student.projects and student.projects|length %}
+
+								<table class="table-auto w-full">
+									<thead>
+										<tr>
+											<th class="text-left">Name</th>
+											<th class="text-left">Status</th>
+											<th class="text-left">Final mark</th>
+											<th class="text-left">Occurrence</th>
+											<th class="text-left">Validated?</th>
+										</tr>
+									</thead>
+									<tbody>
+										{% for project in student.projects %}
+										<tr>
+											<td class="text-left">{{project.project.name}}</td>
+											<td class="text-left">{{project.status}}</td>
+											<td class="text-left">{{project.final_mark}}</td>
+											<td class="text-left">{{project.occurrence}}</td>
+											<td class="text-left">{{project.validated}}</td>
+										</tr>
+										{% endfor %}
+									</tbody>
+								</table>
+							</div>
+							{% else %}
+							<div class="flex flex-col justify-center gap-2 px-3 py-1">
+								<p class="text-center">No current projects</p>
+							</div>
+							{% endif %}
+						</div>
+					</fieldset>
+
+				</div>
+			</div>
+			{% endfor %}
+		</main>
+
+		<fieldset class="font-mono text-left border border-neutral-500 flex flex-col">
+			<legend class="font-serif text-xl font-bold"> Available query params for filtering </legend>
+			<pre>
+				{% for field in fields %}
+					<span class="font-semibold">{{ field.name }}{% if field.nullable %}<span class="text-red-500">?</span>{% endif %}</span><span>: {{ field.type }},</span>
+				{% endfor %}
+			</pre>
+		</fieldset>
+	</div>
+	<div id="overlay" onclick="toggleModal()"
+		class="fixed top-0 left-0 z-40 hidden w-full h-full backdrop-brightness-90"></div>
+	<div id="modal"
+		class="fixed z-50 hidden w-10/12 max-w-screen-lg px-5 py-3 overflow-y-auto -translate-x-1/2 -translate-y-1/2 border-2 border-black top-1/2 left-1/2 h-5/6 bg-neutral-200 overscroll-contain">
+		<h3 class="font-mono text-xl font-bold"> USER OVERVIEW </h3>
+		<h4 id="modal-login" class="font-sans text-base"></h4>
+		<div id="student-details" class="max-w-full space-y-3 text-justify text-ellipsis font-[Consolas]"></div>
+	</div>
+	<script>
+		const modal = document.querySelector('#modal');
+		const overlay = document.querySelector('#overlay');
+		const container = document.querySelector('#student-details');
+		const modalLogin = document.querySelector('#modal-login');
 	</script>
 </body>
 

@@ -27,8 +27,9 @@ BASIC_FILTERS = {
 }
 
 CUSTOM_FILTERS = [
-	{"name": "fullscan", "type": "boolean", "nullable": False},
-	{"name": "examname", "type": "string", "nullable": False}
+	{"name": "fullscan", "type": "boolean", "nullable": True},
+	{"name": "examname", "type": "string", "nullable": True},
+	{"name": "projectname", "type": "string", "nullable": True}
 ]
 
 cachedUsers = []
@@ -43,7 +44,8 @@ def StudentsAPI():
 			return json.load(file)
 	except Exception as e:
 		logging.exception(e)
-		return None
+		exit(1)
+		return []
 
 @app.route("/api/students/keys")
 def StudentsKeysAPI(customData=None):
@@ -131,16 +133,17 @@ def flatten_keys(obj, parent_key=""):
 # FETCH STUDENT DATA
 
 def getStudData(user, idx = -1):
-	result = API.getUserByID(user["id"])
-	if (not result):
-		result = user
-		result['failedFetchExams'] = True
+	_ = API.getUserByID(user["id"])
+	if (not _):
+		_ = user
+		_['failedFetchExams'] = True
 	else:
-		result['failedFetchExams'] = False
-		result['rawExams'] = result['projects_users']
-		result['currentExams'] = [i for i in result['projects_users'] if 'project' in i and 'slug' in i['project'] and 'exam' in i['project']['slug'].lower()]
-	print(f'parsed-[{idx}]\t{user["id"]=}\t{len(result["currentExams"])=}')
-	return result
+		_['failedFetchExams'] = False
+		_['all_projects'] = _['projects_users']
+		_['exams'] = [i for i in _['projects_users'] if 'project' in i and 'slug' in i['project'] and 'exam' in i['project']['slug'].lower()]
+		_['projects'] = [i for i in _['projects_users'] if 'project' in i and 'slug' in i['project'] and 'exam' not in i['project']['slug'].lower()]
+	print(f'parsed-[{idx}]\t{user["id"]=}\t{user["login"]=}\t{len(_["all_projects"])=}')
+	return _
 
 #-------------------------------------------------------------------------------
 # CACHING FUNCTIONS
@@ -190,11 +193,6 @@ def invalidateCache(filteredList=None):
 			result.append(fetched_user)
 		else:
 			result.append(cache_entry)
-	result_ids = set([i['id'] for i in result])
-	# add old users that were not in filtered list
-	for user_id, user in cache.items():
-		if user_id not in result_ids:
-			result.append(user)
 
 	save_user_cache(cache)
 	print(f'Cache invalidated. New size: {len(result)}')
@@ -275,16 +273,16 @@ def conditional(value, condition):
 		return str(condition) in str(value)
 
 
-def get_first_exam_final_mark(user: dict):
+def get_first_exam_final_mark(projects: list):
 	# Use .get() to provide a default empty list if 'projects_users' key is missing
-	exams = [p for p in user.get('projects_users', []) if "exam" in p['project']['slug'].lower() and p['final_mark'] is not None]
+	exams = [p for p in projects and p['final_mark'] is not None]
 	return exams[0]['final_mark'] if exams else None
 
 def sort_by_exam_final_grade_and_login(users: "List[dict]"):
-	return sorted(users, key=lambda user: user['average_final_mark'], reverse=True)
+	return sorted(users, key=lambda user: user['average_exam_final_mark'], reverse=True)
 
-def get_average_final_mark(user):
-	exams = user.get('currentExams', [])
+def get_average_final_mark(user, objName="exams"):
+	exams = user.get(objName, [])
 	total = sum([e['final_mark'] for e in exams if e['final_mark'] is not None or 0])
 	if len(exams) == 0:
 		return 0
@@ -300,7 +298,8 @@ def Homepage():
 	args = request.args
 
 	checkForFinalExam = args.get("fullscan") is not None
-	examNameFilter = args.get("examname", "exam").lower()
+	examNameFilter = args.get("examname", "").lower()
+	projectNameFilter = args.get("projectname", "").lower()
 
 	# -----------------------------
 	# 1. BASIC FILTERS — pre-fetch
@@ -336,8 +335,11 @@ def Homepage():
 	# Final processing
 	# -------------------------
 	for user in filtered:
-		user['currentExams'] = [e for e in user.get('currentExams', []) if examNameFilter in e['project']['slug'].lower()]
-		user['average_final_mark'] = get_average_final_mark(user)
+		user['exams'] = [e for e in user.get('all_projects', []) if 'exam' in e['project']['slug'].lower() and (examNameFilter in e['project']['slug'].lower() or examNameFilter == '')]
+		user['projects'] = [e for e in user.get('all_projects', []) if 'exam' not in e['project']['slug'].lower() and (projectNameFilter in e['project']['slug'].lower() or projectNameFilter == '')]
+		user['average_exam_final_mark'] = get_average_final_mark(user)
+		user['average_project_final_mark'] = get_average_final_mark(user, objName="projects")
+		user['average_mark'] = get_average_final_mark(user, objName="all_projects")
 
 	sorted_result = sort_by_exam_final_grade_and_login(filtered)
 
@@ -359,4 +361,4 @@ def Other(page):
 	return render_template(f"{page}.html")
 
 if __name__ == '__main__':
-	app.run(debug=False, host='0.0.0.0', port=SERVER_PORT)
+	app.run(debug=True, host='0.0.0.0', port=SERVER_PORT)
