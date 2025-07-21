@@ -17,15 +17,18 @@
 	</title>
 </head>
 
-<body class="flex flex-col overflow-hidden text-center bg-neutral-100">
-	<div class="overflow-y-auto">
+<body class="flex flex-col overflow-hidden text-center bg-neutral-900 text-neutral-100">
+	<div class="relative w-full overflow-y-auto">
+		<div class="sticky top-0 right-0 z-10 w-full px-4 py-1 text-end">
+			<a href="#filters" class="p-1 text-xl text-yellow-400 uppercase rounded hover:underline bg-black/75">FILTERS</a>
+		</div>
 		<div>
 			<h1 class="font-serif text-xl">42 Firenze students list</h1>
 			<div>Total {{students | length}}</div>
 		</div>
 		<main class="flex flex-col gap-2 grow shrink-0">
 			{% for student in students %}
-			<div class="grid min-w-0 grid-cols-1 px-3 py-1 border border-gray-400 sm:grid-cols-7">
+			<div class="grid min-w-0 grid-cols-1 px-3 py-1 border border-gray-500 sm:grid-cols-7">
 				<div class="col-span-1">
 					<a href="https://profile.intra.42.fr/users/{{student.login}}" target="_blank" referrer="noreferrer">
 						{% if student.image.link %}
@@ -63,11 +66,11 @@
 
 				</div>
 				<div class="flex flex-col justify-center col-span-1 gap-2 px-3 py-1 sm:col-span-4">
-					<fieldset class="flex flex-col gap-2 border">
+					<fieldset class="flex flex-col gap-2 border border-white/40">
 						<legend class="flex items-center justify-between font-serif text-xl font-bold">
 							<span>Exams</span>
 							<button type="button" onclick="toggleSection(this)"
-								class="ml-2 text-sm text-blue-600 hover:underline" data-expanded="true">[−]</button>
+								class="ml-2 text-sm text-yellow-400 hover:underline" data-expanded="true">[−]</button>
 						</legend>
 
 						<div>
@@ -109,11 +112,11 @@
 					</fieldset>
 
 
-					<fieldset class="flex flex-col gap-2 border">
+					<fieldset class="flex flex-col gap-2 border border-white/40">
 						<legend class="font-serif text-xl font-bold">
 							<span>Projects</span>
 							<button type="button" onclick="toggleSection(this)"
-								class="ml-2 text-sm text-blue-600 hover:underline" data-expanded="false">[+]</button>
+								class="ml-2 text-sm text-yellow-400 hover:underline" data-expanded="false">[+]</button>
 						</legend>
 						<div>
 							Average final mark: <span>{{ student.average_project_final_mark }}</span>
@@ -159,8 +162,8 @@
 			{% endfor %}
 		</main>
 
-		<fieldset class="flex flex-col font-mono text-left border border-neutral-500">
-			<legend class="font-serif text-xl font-bold"> Available query params for filtering </legend>
+		<fieldset id="filters" class="flex flex-col px-2 font-mono text-left border border-neutral-600">
+			<legend class="px-1 font-serif text-xl font-bold"> Available filtering query params </legend>
 			<pre>
 				{% for field in fields %}
 					<span class="font-semibold">{{ field.name }}{% if field.nullable %}<span class="text-red-500">?</span>{% endif %}</span><span>: {{ field.type }},</span>
@@ -171,7 +174,7 @@
 	<div id="overlay" onclick="toggleModal()"
 		class="fixed top-0 left-0 z-40 hidden w-full h-full backdrop-brightness-90"></div>
 	<div id="modal"
-		class="fixed z-50 hidden w-10/12 max-w-screen-lg px-5 py-3 overflow-y-auto -translate-x-1/2 -translate-y-1/2 border-2 border-black top-1/2 left-1/2 h-5/6 bg-neutral-200 overscroll-contain">
+		class="fixed z-50 hidden w-10/12 max-w-screen-lg px-5 py-3 overflow-y-auto -translate-x-1/2 -translate-y-1/2 border-2 rounded-lg border-white/50 top-1/2 left-1/2 h-5/6 bg-neutral-950 overscroll-contain">
 		<h3 class="font-mono text-xl font-bold"> USER OVERVIEW </h3>
 		<h4 id="modal-login" class="font-sans text-base"></h4>
 		<div id="student-details" class="max-w-full space-y-3 text-justify text-ellipsis font-[Consolas]"></div>
@@ -222,7 +225,7 @@
 			} else if (Array.isArray(value)) {
 				const id = getJsonId();
 				const shouldHide = value.length >= hideArrayMinLength;
-				let html = `<div>${pad}<span class="font-semibold">${key}@${value.length}</span>: <button onclick="toggleJson('${id}')" class="text-blue-600">[${!shouldHide ? '−' : '+'}]</button></div>`;
+				let html = `<div>${pad}<span class="font-semibold">${key}@${value.length}</span>: <button onclick="toggleJson('${id}')" class="text-yellow-400">[${!shouldHide ? '−' : '+'}]</button></div>`;
 				html += `<div id="${id}" style="display: ${shouldHide ? 'none' : 'block'};">${pad}[`;
 				for (let i = 0; i < value.length; i++) {
 					html += renderField(i, value[i], indent + 1);
@@ -231,7 +234,7 @@
 				return html;
 			} else if (typeof value === 'object') {
 				const id = getJsonId();
-				let html = `<div>${pad}<span class="font-semibold">${key}</span>: <button onclick="toggleJson('${id}')" class="text-blue-600">[−]</button></div>`;
+				let html = `<div>${pad}<span class="font-semibold">${key}</span>: <button onclick="toggleJson('${id}')" class="text-yellow-400">[−]</button></div>`;
 				html += `<div id="${id}" style="display: 'block';">${pad}{`;
 				for (let subkey in value) {
 					html += renderField(subkey, value[subkey], indent + 1);

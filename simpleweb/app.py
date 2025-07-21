@@ -6,6 +6,7 @@ import time
 from collections import defaultdict
 import numbers
 import re
+import math
 
 from api import API
 
@@ -133,7 +134,11 @@ def flatten_keys(obj, parent_key=""):
 # FETCH STUDENT DATA
 
 def getStudData(user, idx = -1):
-	_ = API.getUserByID(user["id"])
+	try:
+		_ = API.getUserByID(user["id"])
+	except Exception as e:
+		logging.warning(f'Failed to fetch user data for {user["id"]=}\t{user["login"]=}')
+		return user
 	if (not _):
 		_ = user
 		_['failedFetchExams'] = True
@@ -272,12 +277,6 @@ def conditional(value, condition):
 	else:
 		return str(condition) in str(value)
 
-
-def get_first_exam_final_mark(projects: list):
-	# Use .get() to provide a default empty list if 'projects_users' key is missing
-	exams = [p for p in projects if p['final_mark'] is not None]
-	return exams[0]['final_mark'] if exams else None
-
 def sort_by_exam_final_grade_and_login(users: "list[dict]"):
 	return sorted(users, key=lambda user: user['average_exam_final_mark'], reverse=True)
 
@@ -286,7 +285,7 @@ def get_average_final_mark(user, objName="exams"):
 	total = sum([e['final_mark'] for e in exams if e['final_mark'] is not None or 0])
 	if len(exams) == 0:
 		return 0
-	return total / len(exams)
+	return float(f'{total / len(exams):.2f}')
 
 
 @app.route("/")

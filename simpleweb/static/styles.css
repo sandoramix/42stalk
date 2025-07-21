@@ -11,3 +11,15 @@ body {
 	width: 100dvw;
 }
 
+*::-webkit-scrollbar {
+	width: 0.5rem;
+	height: 0.5rem;
+	background-color: transparent;
+}
+*::-webkit-scrollbar-thumb {
+	background-color: rgba(255, 255, 255, 0.5);
+	border-radius: 0.25rem;
+}
+*::-webkit-scrollbar-thumb:hover {
+	background-color: rgba(255, 255, 255, 0.9);
+}
