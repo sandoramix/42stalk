@@ -173,7 +173,7 @@ def is_cache_expired(timestamp_str):
 	except:
 		return True
 
-def invalidateCache(filteredList=None):
+def invalidateCache(filteredList: "list"=[]):
 
 	global cachedUsers
 	cache = load_user_cache()
@@ -275,10 +275,10 @@ def conditional(value, condition):
 
 def get_first_exam_final_mark(projects: list):
 	# Use .get() to provide a default empty list if 'projects_users' key is missing
-	exams = [p for p in projects and p['final_mark'] is not None]
+	exams = [p for p in projects if p['final_mark'] is not None]
 	return exams[0]['final_mark'] if exams else None
 
-def sort_by_exam_final_grade_and_login(users: "List[dict]"):
+def sort_by_exam_final_grade_and_login(users: "list[dict]"):
 	return sorted(users, key=lambda user: user['average_exam_final_mark'], reverse=True)
 
 def get_average_final_mark(user, objName="exams"):
@@ -344,7 +344,7 @@ def Homepage():
 	sorted_result = sort_by_exam_final_grade_and_login(filtered)
 
 	fields = StudentsKeysAPI(customData=sorted_result)
-	return render_template("index.html", students=sorted_result, fields=fields)
+	return render_template("index.html", students=sorted_result, students_json=json.dumps(sorted_result), fields=fields)
 
 #-------------------------------------------------------------------------------
 
