@@ -17,18 +17,34 @@
 	</title>
 </head>
 
-<body class="flex flex-col overflow-hidden text-center bg-neutral-900 text-neutral-100">
+<body class="flex flex-col px-2 py-5 pt-0 overflow-hidden text-center bg-neutral-900 text-neutral-100">
 	<div class="relative w-full overflow-y-auto">
-		<div class="sticky top-0 right-0 z-10 w-full px-4 py-1 text-end">
-			<a href="#filters" class="p-1 text-xl text-yellow-400 uppercase rounded hover:underline bg-black/75">FILTERS</a>
+		{% if unknownKeys|length %}
+		<div class="flex flex-col pt-5">
+			<h3 class="flex font-mono text-2xl uppercase">There are some unknown query params:</h2>
+				<ul class="flex flex-col">
+					{% for key in unknownKeys %}
+					<li class="flex items-center gap-2 text-yellow-400">
+						<div class="w-2 h-2 bg-red-600 rounded-full animate-pulse"></div>
+						<div class="flex items-center font-mono font-bold">{{key}}</div>
+					</li>
+					{% endfor %}
+				</ul>
 		</div>
-		<div>
-			<h1 class="font-serif text-xl">42 Firenze students list</h1>
-			<div>Total {{students | length}}</div>
+		{% endif %}
+
+		<div class="sticky top-0 right-0 z-10 w-full px-4 py-1 text-end">
+			<a href="#filters"
+				class="p-1 text-xl text-yellow-400 uppercase rounded hover:underline bg-black/75">FILTERS</a>
+		</div>
+
+		<div class="flex items-center gap-4 font-mono text-4xl uppercase">
+			<h1>RESULT:</h1>
+			<div>{{students | length}}</div>
 		</div>
 		<main class="flex flex-col gap-2 grow shrink-0">
 			{% for student in students %}
-			<div class="grid min-w-0 grid-cols-1 px-3 py-1 border border-gray-500 sm:grid-cols-7">
+			<div class="grid min-w-0 grid-cols-1 px-3 py-1 border border-gray-600 sm:grid-cols-7">
 				<div class="col-span-1">
 					<a href="https://profile.intra.42.fr/users/{{student.login}}" target="_blank" referrer="noreferrer">
 						{% if student.image.link %}
@@ -67,7 +83,7 @@
 				</div>
 				<div class="flex flex-col justify-center col-span-1 gap-2 px-3 py-1 sm:col-span-4">
 					<fieldset class="flex flex-col gap-2 border border-white/40">
-						<legend class="flex items-center justify-between font-serif text-xl font-bold">
+						<legend class="flex items-center justify-between text-xl font-bold">
 							<span>Exams</span>
 							<button type="button" onclick="toggleSection(this)"
 								class="ml-2 text-sm text-yellow-400 hover:underline" data-expanded="true">[−]</button>
@@ -113,7 +129,7 @@
 
 
 					<fieldset class="flex flex-col gap-2 border border-white/40">
-						<legend class="font-serif text-xl font-bold">
+						<legend class="text-xl font-bold">
 							<span>Projects</span>
 							<button type="button" onclick="toggleSection(this)"
 								class="ml-2 text-sm text-yellow-400 hover:underline" data-expanded="false">[+]</button>
@@ -162,13 +178,64 @@
 			{% endfor %}
 		</main>
 
-		<fieldset id="filters" class="flex flex-col px-2 font-mono text-left border border-neutral-600">
-			<legend class="px-1 font-serif text-xl font-bold"> Available filtering query params </legend>
-			<pre>
-				{% for field in fields %}
-					<span class="font-semibold">{{ field.name }}{% if field.nullable %}<span class="text-red-500">?</span>{% endif %}</span><span>: {{ field.type }},</span>
-				{% endfor %}
-			</pre>
+		<fieldset id="filters" class="flex flex-col px-2 mt-20 font-mono border border-white/25">
+			<legend class="px-1 text-xl font-bold"> Available filtering query params </legend>
+
+			<fieldset id="custom-filters"
+				class="flex flex-col w-full px-2 overflow-hidden font-mono text-left border border-neutral-600">
+				<legend class="px-1 text-xl font-bold"> Custom filters </legend>
+				<div class="flex flex-col overflow-hidden">
+					{% for field in customFields %}
+					{% set dot_count = field.name.count('.') %}
+					<div class="flex flex-wrap items-start py-1"
+						style="padding-left: {{ 0.75 * dot_count }}rem;">
+						<div class="flex font-semibold whitespace-nowrap">
+							<span>{{ field.name }}</span>
+							{% if field.nullable %}
+							<span class="pl-1 text-red-500">?</span>
+							{% endif %}
+						</div>
+
+						<div class="whitespace-nowrap">: {{ field.type }}</div>
+
+						{% if field.description %}
+						<div class="flex-1 min-w-0 ml-2 text-green-600 break-words" title="{{ field.description }}">
+							// {{ field.description }}
+						</div>
+						{% endif %}
+
+						<div class="whitespace-nowrap">,</div>
+					</div>
+					{% endfor %}
+				</div>
+			</fieldset>
+			<fieldset id="user-filters" class="flex flex-col px-2 font-mono text-left border border-neutral-600">
+				<legend class="px-1 text-xl font-bold"> User filters </legend>
+				<div class="flex flex-col overflow-hidden">
+					{% for field in fields %}
+					{% set dot_count = field.name.count('.') %}
+					<div class="flex flex-wrap items-start py-1"
+						style="padding-left: {{ 0.75 * dot_count }}rem;">
+						<div class="flex font-semibold whitespace-nowrap">
+							<span>{{ field.name }}</span>
+							{% if field.nullable %}
+							<span class="pl-1 text-red-500">?</span>
+							{% endif %}
+						</div>
+
+						<div class="whitespace-nowrap">: {{ field.type }}</div>
+
+						{% if field.description %}
+						<div class="flex-1 min-w-0 text-green-600 break-words" title="{{ field.description }}">
+							// {{ field.description }}
+						</div>
+						{% endif %}
+
+						<div class="whitespace-nowrap">,</div>
+					</div>
+					{% endfor %}
+				</div>
+			</fieldset>
 		</fieldset>
 	</div>
 	<div id="overlay" onclick="toggleModal()"

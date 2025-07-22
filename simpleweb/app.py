@@ -16,21 +16,19 @@ USER_CACHE_DIR = "../data/"
 if (not os.path.exists(USER_CACHE_DIR)):
 	os.mkdir(USER_CACHE_DIR)
 USER_CACHE_PATH = os.path.join(USER_CACHE_DIR, "cached_users.json")
-CACHE_EXPIRATION_DAYS = 2
+CACHE_EXPIRATION_HOURS = 12
+
 
 # Only these are filtered BEFORE fullscan
 BASIC_FILTERS = {
-	"id", "email", "login", "first_name", "last_name", "usual_full_name",
-	"usual_first_name", "url", "phone", "displayname", "kind",
-	"correction_point", "pool_month", "pool_year", "location",
-	"wallet", "anonymize_date", "data_erasure_date", "created_at",
-	"updated_at", "alumnized_at", "alumni", "active", "staff"
 }
 
 CUSTOM_FILTERS = [
-	{"name": "fullscan", "type": "boolean", "nullable": True},
-	{"name": "examname", "type": "string", "nullable": True},
-	{"name": "projectname", "type": "string", "nullable": True}
+	{"name": "fullscan", "type": "boolean", "nullable": True, "description": "If true, will fetch all exams and projects for each student."},
+	{"name": "examname", "type": "string", "nullable": True, "description": "Filter exams by name."},
+	{"name": "projectname", "type": "string", "nullable": True, "description": "Filter projects by name."},
+	{"name": "sortby", "type": "string", "nullable": True, "description": "Sort by field. Can be any field from the user object, or any of the following: average_exam_final_mark, average_project_final_mark, average_mark"},
+	{"name": "order", "type": "string", "nullable": True, "description": "Sort order. Can be either 'asc' or 'desc'"}
 ]
 
 cachedUsers = []
@@ -40,9 +38,12 @@ app = Flask("server")
 
 @app.route("/api/students")
 def StudentsAPI():
+	global BASIC_FILTERS
 	try:
 		with open("../data/students.json", 'r') as file:
-			return json.load(file)
+			data = json.load(file)
+		BASIC_FILTERS = set(flatten_keys(data[0]).keys())
+		return data
 	except Exception as e:
 		logging.exception(e)
 		exit(1)
@@ -79,10 +80,9 @@ def StudentsKeysAPI(customData=None):
 		result.append({
 			"name": key,
 			"type": types[0] if len(types) == 1 else "|".join(types),
-			"nullable": field_nullable[key]
+			"nullable": field_nullable[key],
+			"description": None
 		})
-
-	result.extend(CUSTOM_FILTERS)
 
 	return result
 
@@ -173,8 +173,8 @@ def save_user_cache(cache):
 def is_cache_expired(timestamp_str):
 	try:
 		last_saved = float(timestamp_str)
-		age_days = (time.time() - last_saved) / (60 * 60 * 24)
-		return age_days > CACHE_EXPIRATION_DAYS
+		age_days = (time.time() - last_saved) / (60 * 60)
+		return age_days > CACHE_EXPIRATION_HOURS
 	except:
 		return True
 
@@ -206,7 +206,7 @@ def invalidateCache(filteredList: "list"=[]):
 #-------------------------------------------------------------------------------
 
 
-def nested(obj, attr_path, first=False, flatten=True, as_set=False):
+def nested(obj: object, attr_path: str, first=False, flatten=True, as_set=False):
 	parts = attr_path.split(".")
 
 	def parse_key(part):
@@ -288,6 +288,16 @@ def get_average_final_mark(user, objName="exams"):
 	return float(f'{total / len(exams):.2f}')
 
 
+def sort_by(users: list[object], sortBy: str, reverse: bool = False):
+	def safe_sort_key(user: object):
+		value = nested(user, sortBy)
+		if isinstance(value, list):
+			return value[0] if value else float('-inf')
+		if value is None:
+			return float('-inf')
+		return value
+	return sorted(users, key=safe_sort_key, reverse=reverse)
+
 @app.route("/")
 def Homepage():
 	students = StudentsAPI()
@@ -296,20 +306,29 @@ def Homepage():
 
 	args = request.args
 
+	unknownKeys = set(args.keys())
+	for key in CUSTOM_FILTERS:
+		keyname = key['name']
+		if keyname in unknownKeys:
+			unknownKeys.remove(keyname)
+
 	checkForFinalExam = args.get("fullscan") is not None
 	examNameFilter = args.get("examname", "").lower()
 	projectNameFilter = args.get("projectname", "").lower()
+
+	sortBy = args.get("sortby", None)
+	sortReverse = args.get("order", None) == "desc"
 
 	# -----------------------------
 	# 1. BASIC FILTERS — pre-fetch
 	# -----------------------------
 	filtered = students
 	for arg, val in args.items():
-		arg_lower = arg.lower()
 		if arg in BASIC_FILTERS:
+			unknownKeys.remove(arg)
 			filtered = [
 				stud for stud in filtered
-				if conditional(nested(stud, arg_lower, as_set=True), val)
+				if conditional(nested(stud, arg, as_set=True), val)
 			]
 
 	# ---------------------------------
@@ -317,17 +336,23 @@ def Homepage():
 	# ---------------------------------
 	if checkForFinalExam:
 		filtered = invalidateCache(filteredList=filtered)
+		fetchedKeys = []
+		if len(filtered) > 0:
+			fetchedKeys = flatten_keys(filtered[0])
 
 		# -----------------------------
 		# 3. CUSTOM FILTERS — post-fetch
 		# -----------------------------
 		for arg, val in args.items():
-			arg_lower = arg.lower()
-			if arg in BASIC_FILTERS or [i['name'] for i in CUSTOM_FILTERS if i['name'] == arg_lower]:
+			arg = arg.lower()
+			if arg in BASIC_FILTERS or len([i['name'] for i in CUSTOM_FILTERS if i['name'] == arg]) > 0:
 				continue  # already applied or internal
+			if arg not in fetchedKeys:
+				continue # unknown key
+			unknownKeys.remove(arg)
 			filtered = [
 				stud for stud in filtered
-				if conditional(nested(stud, arg_lower, as_set=True), val)
+				if conditional(nested(stud, arg, as_set=True), val)
 			]
 
 	# -------------------------
@@ -340,10 +365,12 @@ def Homepage():
 		user['average_project_final_mark'] = get_average_final_mark(user, objName="projects")
 		user['average_mark'] = get_average_final_mark(user, objName="all_projects")
 
-	sorted_result = sort_by_exam_final_grade_and_login(filtered)
-
+	if sortBy:
+		sorted_result = sort_by(filtered, sortBy, reverse=sortReverse)
+	else:
+		sorted_result = filtered
 	fields = StudentsKeysAPI(customData=sorted_result)
-	return render_template("index.html", students=sorted_result, students_json=json.dumps(sorted_result), fields=fields)
+	return render_template("index.html", students=sorted_result, students_json=json.dumps(sorted_result), fields=fields, customFields = CUSTOM_FILTERS, unknownKeys=list(unknownKeys))
 
 #-------------------------------------------------------------------------------
 
