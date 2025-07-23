@@ -1,3 +1,3 @@
 python3 -m venv pyenv
 pyenv/bin/pip install -r requirements.txt
-cp .env.copy .env
+cp .env.example .env

@@ -28,7 +28,8 @@ CUSTOM_FILTERS = [
 	{"name": "examname", "type": "string", "nullable": True, "description": "Filter exams by name."},
 	{"name": "projectname", "type": "string", "nullable": True, "description": "Filter projects by name."},
 	{"name": "sortby", "type": "string", "nullable": True, "description": "Sort by field. Can be any field from the user object, or any of the following: average_exam_final_mark, average_project_final_mark, average_mark"},
-	{"name": "order", "type": "string", "nullable": True, "description": "Sort order. Can be either 'asc' or 'desc'"}
+	{"name": "order", "type": "string", "nullable": True, "description": "Sort order. Can be either 'asc' or 'desc'"},
+	{"name": "campus_id", "type": "string", "nullable": True, "description": "Select which JSON file to use. If not provided, will use the default (students.json) one."}
 ]
 
 cachedUsers = []
@@ -37,16 +38,27 @@ cachedUsers = []
 app = Flask("server")
 
 @app.route("/api/students")
-def StudentsAPI():
+def StudentsAPI(campus_id:"str|int|None"=None):
 	global BASIC_FILTERS
 	try:
-		with open("../data/students.json", 'r') as file:
+		# get a possible `campus_id` query parameter
+		try:
+			campus_id = str(campus_id if campus_id is not None else request.args.get('campus_id'))
+			campus_id = int(campus_id)
+		except:
+			campus_id = None
+		filename = "../data/students.json"
+		if campus_id is not None:
+			filename = f"../data/campus_{campus_id}_students.json"
+		if not os.path.exists(filename):
+			logging.error(f"File {filename} does not exist")
+			return []
+		with open(filename, 'r') as file:
 			data = json.load(file)
 		BASIC_FILTERS = set(flatten_keys(data[0]).keys())
 		return data
 	except Exception as e:
 		logging.exception(e)
-		exit(1)
 		return []
 
 @app.route("/api/students/keys")
@@ -300,7 +312,8 @@ def sort_by(users: list[object], sortBy: str, reverse: bool = False):
 
 @app.route("/")
 def Homepage():
-	students = StudentsAPI()
+	possibleCampusId = request.args.get('campus_id')
+	students = StudentsAPI(possibleCampusId)
 	if len(students) == 0:
 		return render_template("index.html", students=[], fields=[])
 
