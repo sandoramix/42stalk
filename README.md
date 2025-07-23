@@ -6,7 +6,8 @@ The good part is that there is a filtering system that allows you to filter by e
 ## Installation
 
 1. Install Python 3.10 or newer
-4. Run `init.sh` to create a virtual environment and install dependencies
-5. Fetch the students data by running `./fetch-students.sh` or `./fetch-students.sh <CAMPUS_ID>`
-6. Run the app by running `./run-server.sh`
-7. Enjoy the stalk!
+2. Run `init.sh` to create a virtual environment and install dependencies
+3. Setup your .env with the 42 API credentials
+4. Fetch the students data by running `./fetch-students.sh` or `./fetch-students.sh <CAMPUS_ID>`
+5. Run the app by running `./run-server.sh`
+6. Enjoy the stalk!
