@@ -131,9 +131,9 @@ def flatten_keys(obj, parent_key=""):
 					for i in v:
 						if isinstance(i, dict):
 							items.update(flatten_keys(i, new_key))
-							break
-					else:
-						items[new_key] = infer_type(v)
+							#break
+					#else:
+					#	items[new_key] = infer_type(v)
 				else:
 					items[new_key] = "array"
 			else:
@@ -273,21 +273,26 @@ def nested(obj: object, attr_path: str, first=False, flatten=True, as_set=False)
 
 
 def conditional(value, condition):
+	if isinstance(value, list):
+		return any(conditional(v, condition) for v in value)
+
 	condition = str(condition)
+	value = "" if value is None else str(value)
+
 	if condition.startswith(">="):
-		return str(value) >= str(condition[2:])
+		return value >= condition[2:]
 	elif condition.startswith("<="):
-		return str(value) <= str(condition[2:])
+		return value <= condition[2:]
 	elif condition.startswith(">"):
-		return str(value) > str(condition[1:])
+		return value > condition[1:]
 	elif condition.startswith("<"):
-		return str(value) < str(condition[1:])
+		return value < condition[1:]
 	elif condition.startswith("=="):
-		return str(value) == str(condition[2:])
+		return value == condition[2:]
 	elif condition.startswith("!="):
-		return str(value) != str(condition[2:])
+		return value != condition[2:]
 	else:
-		return str(condition) in str(value)
+		return condition in value
 
 def sort_by_exam_final_grade_and_login(users: "list[dict]"):
 	return sorted(users, key=lambda user: user['average_exam_final_mark'], reverse=True)
@@ -352,7 +357,6 @@ def Homepage():
 		fetchedKeys = []
 		if len(filtered) > 0:
 			fetchedKeys = flatten_keys(filtered[0])
-
 		# -----------------------------
 		# 3. CUSTOM FILTERS — post-fetch
 		# -----------------------------
