@@ -18,6 +18,8 @@ if (not os.path.exists(USER_CACHE_DIR)):
 USER_CACHE_PATH = os.path.join(USER_CACHE_DIR, "cached_users.json")
 CACHE_EXPIRATION_HOURS = 12
 
+CPISCINE_FINAL_EXAM_NAME = "C Piscine Final Exam"
+
 
 # Only these are filtered BEFORE fullscan
 BASIC_FILTERS = {
@@ -29,7 +31,8 @@ CUSTOM_FILTERS = [
 	{"name": "projectname", "type": "string", "nullable": True, "description": "Filter projects by name."},
 	{"name": "sortby", "type": "string", "nullable": True, "description": "Sort by field. Can be any field from the user object, or any of the following: average_exam_final_mark, average_project_final_mark, average_mark"},
 	{"name": "order", "type": "string", "nullable": True, "description": "Sort order. Can be either 'asc' or 'desc'"},
-	{"name": "campus_id", "type": "string", "nullable": True, "description": "Select which JSON file to use. If not provided, will use the default (students.json) one."}
+	{"name": "campus_id", "type": "string", "nullable": True, "description": "Select which JSON file to use. If not provided, will use the default (students.json) one."},
+	{"name": "cpiscine_final_mark", "type": "string", "nullable": True, "description": f"Filter by final mark of the '{CPISCINE_FINAL_EXAM_NAME}' exam. Requires fullscan. Accepts >=, <=, >, <, ==, != prefixes."}
 ]
 
 cachedUsers = []
@@ -320,7 +323,7 @@ def Homepage():
 	possibleCampusId = request.args.get('campus_id')
 	students = StudentsAPI(possibleCampusId)
 	if len(students) == 0:
-		return render_template("index.html", students=[], fields=[])
+		return render_template("index.html", students=[], fields=[], active_filters=[])
 
 	args = request.args
 
@@ -333,6 +336,7 @@ def Homepage():
 	checkForFinalExam = args.get("fullscan") is not None
 	examNameFilter = args.get("examname", "").lower()
 	projectNameFilter = args.get("projectname", "").lower()
+	cpiscineFinalMarkFilter = args.get("cpiscine_final_mark", None)
 
 	sortBy = args.get("sortby", None)
 	sortReverse = args.get("order", None) == "desc"
@@ -357,6 +361,17 @@ def Homepage():
 		fetchedKeys = []
 		if len(filtered) > 0:
 			fetchedKeys = flatten_keys(filtered[0])
+
+		for user in filtered:
+			cpiscine_exam = next((e for e in user.get('all_projects', []) if e.get('project', {}).get('name') == CPISCINE_FINAL_EXAM_NAME), None)
+			user['cpiscine_final_mark'] = cpiscine_exam['final_mark'] if cpiscine_exam else None
+
+		if cpiscineFinalMarkFilter is not None:
+			filtered = [
+				stud for stud in filtered
+				if conditional(stud.get('cpiscine_final_mark'), cpiscineFinalMarkFilter)
+			]
+
 		# -----------------------------
 		# 3. CUSTOM FILTERS — post-fetch
 		# -----------------------------
@@ -387,7 +402,8 @@ def Homepage():
 	else:
 		sorted_result = filtered
 	fields = StudentsKeysAPI(customData=sorted_result)
-	return render_template("index.html", students=sorted_result, students_json=json.dumps(sorted_result), fields=fields, customFields = CUSTOM_FILTERS, unknownKeys=list(unknownKeys))
+	active_filters = [k for k in args.keys() if k not in unknownKeys and args.get(k) != '']
+	return render_template("index.html", students=sorted_result, students_json=json.dumps(sorted_result), fields=fields, customFields = CUSTOM_FILTERS, unknownKeys=list(unknownKeys), active_filters=active_filters)
 
 #-------------------------------------------------------------------------------
 

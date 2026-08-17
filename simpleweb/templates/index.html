@@ -33,9 +33,14 @@
 		</div>
 		{% endif %}
 
-		<div class="sticky top-0 right-0 z-10 w-full px-4 py-1 text-end">
-			<a href="#filters"
-				class="p-1 text-xl text-yellow-400 uppercase rounded hover:underline bg-black/75">FILTERS</a>
+		<div class="sticky top-0 right-0 z-10 flex justify-end w-full px-4 py-1">
+			<button type="button" onclick="toggleFilterPanel()"
+				class="flex items-center gap-2 p-2 text-xl text-yellow-400 uppercase rounded shadow-lg bg-black/75 hover:bg-black">
+				<i class="fa fa-filter" aria-hidden="true"></i> Filters
+				{% if active_filters|length %}
+				<span class="flex items-center justify-center w-6 h-6 text-sm text-black bg-yellow-400 rounded-full">{{ active_filters|length }}</span>
+				{% endif %}
+			</button>
 		</div>
 
 		<div class="flex items-center gap-4 font-mono text-4xl uppercase">
@@ -178,66 +183,121 @@
 			{% endfor %}
 		</main>
 
-		<fieldset id="filters" class="flex flex-col px-2 mt-20 font-mono border border-white/25">
-			<legend class="px-1 text-xl font-bold"> Available filtering query params </legend>
-
-			<fieldset id="custom-filters"
-				class="flex flex-col w-full px-2 overflow-hidden font-mono text-left border border-neutral-600">
-				<legend class="px-1 text-xl font-bold"> Custom filters </legend>
-				<div class="flex flex-col overflow-hidden">
-					{% for field in customFields %}
-					{% set dot_count = field.name.count('.') %}
-					<div class="flex flex-wrap items-start py-1"
-						style="padding-left: {{ 0.75 * dot_count }}rem;">
-						<div class="flex font-semibold whitespace-nowrap">
-							<span>{{ field.name }}</span>
-							{% if field.nullable %}
-							<span class="pl-1 text-red-500">?</span>
-							{% endif %}
-						</div>
-
-						<div class="whitespace-nowrap">: {{ field.type }}</div>
-
-						{% if field.description %}
-						<div class="flex-1 min-w-0 ml-2 text-green-600 break-words" title="{{ field.description }}">
-							// {{ field.description }}
-						</div>
-						{% endif %}
-
-						<div class="whitespace-nowrap">,</div>
-					</div>
-					{% endfor %}
-				</div>
-			</fieldset>
-			<fieldset id="user-filters" class="flex flex-col px-2 font-mono text-left border border-neutral-600">
-				<legend class="px-1 text-xl font-bold"> User filters </legend>
-				<div class="flex flex-col overflow-hidden">
-					{% for field in fields %}
-					{% set dot_count = field.name.count('.') %}
-					<div class="flex flex-wrap items-start py-1"
-						style="padding-left: {{ 0.75 * dot_count }}rem;">
-						<div class="flex font-semibold whitespace-nowrap">
-							<span>{{ field.name }}</span>
-							{% if field.nullable %}
-							<span class="pl-1 text-red-500">?</span>
-							{% endif %}
-						</div>
-
-						<div class="whitespace-nowrap">: {{ field.type }}</div>
-
-						{% if field.description %}
-						<div class="flex-1 min-w-0 text-green-600 break-words" title="{{ field.description }}">
-							// {{ field.description }}
-						</div>
-						{% endif %}
-
-						<div class="whitespace-nowrap">,</div>
-					</div>
-					{% endfor %}
-				</div>
-			</fieldset>
-		</fieldset>
 	</div>
+
+	<div id="filter-overlay" onclick="toggleFilterPanel()"
+		class="fixed top-0 left-0 z-40 hidden w-full h-full backdrop-brightness-75"></div>
+
+	<aside id="filter-panel"
+		class="fixed top-0 right-0 z-50 flex flex-col w-full h-full max-w-md text-left translate-x-full border-l shadow-2xl transition-transform duration-300 border-white/25 bg-neutral-950">
+		<div class="flex items-center justify-between px-4 py-3 border-b border-white/25">
+			<h3 class="font-mono text-xl font-bold text-yellow-400 uppercase">Filters</h3>
+			<button type="button" onclick="toggleFilterPanel()" aria-label="Close filters"
+				class="text-2xl leading-none text-white hover:text-yellow-400">&times;</button>
+		</div>
+
+		<form id="filter-form" method="get" action="{{ url_for('Homepage') }}"
+			class="flex flex-col flex-1 gap-4 px-4 py-3 overflow-y-auto font-mono text-sm">
+
+			<label class="flex items-center gap-2 p-2 border rounded cursor-pointer border-neutral-700 hover:border-yellow-400">
+				<input type="checkbox" id="filter-fullscan" name="fullscan" value="true"
+					{% if request.args.get('fullscan') is not none %}checked{% endif %}>
+				<span class="font-bold">fullscan</span>
+				<span class="text-xs text-neutral-400">— fetch all exams/projects (required for exam filters)</span>
+			</label>
+
+			<div class="flex flex-col gap-1">
+				<label for="filter-examname" class="font-bold">examname</label>
+				<input type="text" id="filter-examname" name="examname" placeholder="e.g. piscine"
+					value="{{ request.args.get('examname', '') }}"
+					class="px-2 py-1 text-white border rounded bg-neutral-900 border-neutral-700 focus:outline-none focus:border-yellow-400">
+			</div>
+
+			<div class="flex flex-col gap-1">
+				<label for="filter-projectname" class="font-bold">projectname</label>
+				<input type="text" id="filter-projectname" name="projectname" placeholder="e.g. libft"
+					value="{{ request.args.get('projectname', '') }}"
+					class="px-2 py-1 text-white border rounded bg-neutral-900 border-neutral-700 focus:outline-none focus:border-yellow-400">
+			</div>
+
+			<div class="flex flex-col gap-1 p-2 border rounded border-yellow-400/40">
+				<label for="filter-cpiscine" class="font-bold text-yellow-400">cpiscine_final_mark</label>
+				<span class="text-xs text-neutral-400">Final mark for "C Piscine Final Exam". Requires fullscan. Accepts &gt;=, &lt;=, &gt;, &lt;, ==, != prefixes (e.g. &gt;=80).</span>
+				<input type="text" id="filter-cpiscine" name="cpiscine_final_mark" placeholder=">=80"
+					value="{{ request.args.get('cpiscine_final_mark', '') }}"
+					class="px-2 py-1 text-white border rounded bg-neutral-900 border-neutral-700 focus:outline-none focus:border-yellow-400">
+			</div>
+
+			<div class="flex gap-2">
+				<div class="flex flex-col flex-1 gap-1">
+					<label for="filter-sortby" class="font-bold">sortby</label>
+					<select id="filter-sortby" name="sortby"
+						class="px-2 py-1 text-white border rounded bg-neutral-900 border-neutral-700 focus:outline-none focus:border-yellow-400">
+						<option value="">—</option>
+						{% for field in fields %}
+						<option value="{{ field.name }}" {% if request.args.get('sortby')==field.name %}selected{% endif %}>{{ field.name }}</option>
+						{% endfor %}
+					</select>
+				</div>
+				<div class="flex flex-col gap-1">
+					<label for="filter-order" class="font-bold">order</label>
+					<select id="filter-order" name="order"
+						class="px-2 py-1 text-white border rounded bg-neutral-900 border-neutral-700 focus:outline-none focus:border-yellow-400">
+						<option value="asc" {% if request.args.get('order') !='desc' %}selected{% endif %}>asc</option>
+						<option value="desc" {% if request.args.get('order')=='desc' %}selected{% endif %}>desc</option>
+					</select>
+				</div>
+			</div>
+
+			<div class="flex flex-col gap-1">
+				<label for="filter-campus" class="font-bold">campus_id</label>
+				<input type="text" id="filter-campus" name="campus_id" placeholder="e.g. 13"
+					value="{{ request.args.get('campus_id', '') }}"
+					class="px-2 py-1 text-white border rounded bg-neutral-900 border-neutral-700 focus:outline-none focus:border-yellow-400">
+			</div>
+
+			<fieldset class="flex flex-col gap-2 p-2 border rounded border-neutral-700">
+				<legend class="px-1 font-bold">Custom field filters</legend>
+				<div id="custom-filter-rows" class="flex flex-col gap-2"></div>
+				<button type="button" onclick="addCustomFilterRow()"
+					class="self-start px-2 py-1 text-xs text-yellow-400 border border-yellow-400 rounded hover:bg-yellow-400 hover:text-black">
+					+ Add field filter
+				</button>
+			</fieldset>
+
+			<details class="text-xs text-neutral-400">
+				<summary class="cursor-pointer hover:text-yellow-400">Available fields reference</summary>
+				<div class="flex flex-col gap-2 mt-2 max-h-48 overflow-y-auto">
+					<div>
+						<div class="font-bold text-neutral-300">Custom filters</div>
+						{% for field in customFields %}
+						<div class="flex flex-wrap gap-1 py-0.5">
+							<span class="font-semibold">{{ field.name }}</span>
+							<span>: {{ field.type }}</span>
+							{% if field.description %}<span class="text-green-600">// {{ field.description }}</span>{% endif %}
+						</div>
+						{% endfor %}
+					</div>
+					<div>
+						<div class="font-bold text-neutral-300">User fields</div>
+						{% for field in fields %}
+						<div class="flex flex-wrap gap-1 py-0.5">
+							<span class="font-semibold">{{ field.name }}</span>
+							<span>: {{ field.type }}</span>
+						</div>
+						{% endfor %}
+					</div>
+				</div>
+			</details>
+
+			<div class="sticky bottom-0 flex gap-2 pt-2 pb-1 border-t bg-neutral-950 border-white/25">
+				<button type="submit"
+					class="flex-1 px-3 py-2 font-bold text-black bg-yellow-400 rounded hover:bg-yellow-300">Apply</button>
+				<a href="{{ url_for('Homepage') }}"
+					class="px-3 py-2 text-center border rounded border-neutral-700 hover:border-yellow-400">Reset</a>
+			</div>
+		</form>
+	</aside>
 	<div id="overlay" onclick="toggleModal()"
 		class="fixed top-0 left-0 z-40 hidden w-full h-full backdrop-brightness-90"></div>
 	<div id="modal"
@@ -351,6 +411,88 @@
 			overlay.classList.toggle('!block');
 			modal.classList.toggle('!block');
 		}
+
+		// -----------------------------------------------------------
+		// FILTER PANEL
+		// -----------------------------------------------------------
+
+		const filterPanel = document.querySelector('#filter-panel');
+		const filterOverlay = document.querySelector('#filter-overlay');
+		const customFilterRows = document.querySelector('#custom-filter-rows');
+
+		const RESERVED_FILTER_NAMES = new Set(
+			['fullscan', 'examname', 'projectname', 'sortby', 'order', 'campus_id', 'cpiscine_final_mark']
+		);
+
+		function openFilterPanel() {
+			filterOverlay.classList.remove('hidden');
+			filterPanel.classList.remove('translate-x-full');
+		}
+
+		function closeFilterPanel() {
+			filterOverlay.classList.add('hidden');
+			filterPanel.classList.add('translate-x-full');
+		}
+
+		function toggleFilterPanel() {
+			if (filterPanel.classList.contains('translate-x-full')) {
+				openFilterPanel();
+			} else {
+				closeFilterPanel();
+			}
+		}
+
+		function addCustomFilterRow(name = '', value = '') {
+			const row = document.createElement('div');
+			row.className = 'flex items-center gap-1';
+			row.innerHTML = `
+				<input type="text" placeholder="field name" value="${name}"
+					class="w-1/2 px-2 py-1 text-white border rounded bg-neutral-900 border-neutral-700 focus:outline-none focus:border-yellow-400">
+				<input type="text" placeholder="value" value="${value}"
+					class="flex-1 px-2 py-1 text-white border rounded bg-neutral-900 border-neutral-700 focus:outline-none focus:border-yellow-400">
+				<button type="button" class="px-2 text-red-400 hover:text-red-300" aria-label="Remove filter">&times;</button>
+			`;
+			const [nameInput, valueInput, removeBtn] = row.children;
+			nameInput.addEventListener('input', syncCustomFilterInputNames);
+			removeBtn.addEventListener('click', () => { row.remove(); });
+			customFilterRows.appendChild(row);
+			syncCustomFilterInputNames();
+		}
+
+		function syncCustomFilterInputNames() {
+			for (const row of customFilterRows.children) {
+				const [nameInput, valueInput] = row.children;
+				const fieldName = nameInput.value.trim();
+				valueInput.name = fieldName ? `custom__${fieldName}` : '';
+			}
+		}
+
+		// Pre-populate custom filter rows from current query params on page load
+		(function initCustomFilterRows() {
+			const params = new URLSearchParams(window.location.search);
+			let hasCustom = false;
+			for (const [key, value] of params.entries()) {
+				if (RESERVED_FILTER_NAMES.has(key)) continue;
+				addCustomFilterRow(key, value);
+				hasCustom = true;
+			}
+			if (hasCustom || params.toString().length) {
+				openFilterPanel();
+			}
+		})();
+
+		// Rename custom__<field> inputs to their real field name right before submit
+		document.querySelector('#filter-form').addEventListener('submit', () => {
+			for (const row of customFilterRows.children) {
+				const [nameInput, valueInput] = row.children;
+				const fieldName = nameInput.value.trim();
+				if (fieldName) {
+					valueInput.name = fieldName;
+				} else {
+					valueInput.removeAttribute('name');
+				}
+			}
+		});
 	</script>
 </body>
 
