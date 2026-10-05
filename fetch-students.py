@@ -36,5 +36,6 @@ default campus from config.json (currently {campus_id}). You can switch between
 fetched campuses from the selector at the top of the page, and fetch or update
 campuses from the web app too (cloud button next to the selector).
 Exams and projects are loaded on demand with "Full scan" (one 42 API request per
-student the first time, then kept in data/cached_users.json; "Rescan" updates the
-profiles older than 12h).""")
+student the first time, then kept in data/cached_users.json). "Rescan" fetches the
+student list and/or the profiles again: only the outdated ones, or everything with
+"Force".""")

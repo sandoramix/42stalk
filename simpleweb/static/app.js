@@ -44,6 +44,38 @@
 		const s = Math.floor(ms / 1000);
 		return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 	}
+	const RTF = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+	const REL_UNITS = [['year', 31536000], ['month', 2592000], ['week', 604800], ['day', 86400], ['hour', 3600], ['minute', 60]];
+	/** "3 days ago", "in 2 weeks"… for an ISO date or a Date. */
+	function fmtRel(when) {
+		const d = when instanceof Date ? when : new Date(when);
+		if (!when || Number.isNaN(d.getTime())) return '';
+		const s = (d.getTime() - Date.now()) / 1000;
+		for (const [unit, secs] of REL_UNITS) if (Math.abs(s) >= secs) return RTF.format(Math.round(s / secs), unit);
+		return 'just now';
+	}
+	function fmtDateTime(iso) {
+		const d = new Date(iso);
+		if (!iso || Number.isNaN(d.getTime())) return '—';
+		return d.toLocaleString(undefined, { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+	}
+	/** Date with its relative time; the exact time is in the tooltip. */
+	const dateRel = (iso) => iso ? `<span class="date-rel" title="${esc(fmtDateTime(iso))}">${fmtDate(iso)} <span class="muted">· ${esc(fmtRel(iso))}</span></span>` : '<span class="muted">—</span>';
+	const ISO_DATE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
+	const daysUntil = (iso) => (new Date(iso).getTime() - Date.now()) / 86400000;
+
+	const intraUrl = (login) => `https://profile.intra.42.fr/users/${encodeURIComponent(login)}`;
+	/** The intra page of a project attempt (a team's page). */
+	const projectUrl = (e) => e?.project?.slug && e.id ? `https://projects.intra.42.fr/projects/${encodeURIComponent(e.project.slug)}/projects_users/${e.id}` : null;
+	const extLink = (href, text, title = '') => `<a class="ext" href="${esc(href)}" target="_blank" rel="noreferrer" ${title ? `title="${esc(title)}"` : ''}>${text}<i class="fa fa-external-link"></i></a>`;
+	const mailLink = (email) => email ? `<a class="ext" href="mailto:${esc(email)}" title="Write to ${esc(email)}"><i class="fa fa-envelope-o"></i></a>` : '';
+	/** API links need a token: the users ones are opened as intra profiles, the others aren't links. */
+	function browsableUrl(url) {
+		const m = /^https:\/\/api\.intra\.42\.fr\/v2\/users\/([^/?#]+)$/.exec(url);
+		if (m) return intraUrl(decodeURIComponent(m[1]));
+		return /^https?:\/\/api\.intra\.42\.fr\//.test(url) ? null : url;
+	}
+
 	const humanize = (s) => s ? String(s).replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase()) : '—';
 	const plural = (n, word, many = word + 's') => `${fmtNum(n)} ${n === 1 ? word : many}`;
 
@@ -215,6 +247,8 @@
 		fieldRows: [],
 		menu: null,
 		lightbox: null,
+		// what the Rescan button fetches again; `force` is never remembered
+		rescan: { students: true, profiles: true, ...store.get('rescan', {}), force: false },
 		noticeDismissed: store.get('dismissed', {}),
 	};
 
@@ -247,7 +281,7 @@
 		for (const [k, v] of params.entries()) {
 			if (CLIENT_PARAMS.includes(k)) continue;
 			// one-shot: never kept in the URL, so a reload doesn't rescan again
-			if (k === 'rescan') continue;
+			if (k === 'rescan' || k === 'force') continue;
 			if (v === '' && !FLAG_PARAMS.has(k)) continue;
 			setParam(applied, k, v);
 		}
@@ -287,7 +321,8 @@
 	let loadController = null;
 	let loadingTimer = null;
 
-	async function load({ keepStaged = null, rescan = false } = {}) {
+	/** `rescan`: null, or { students, profiles, force } to fetch again before searching. */
+	async function load({ keepStaged = null, rescan = null } = {}) {
 		const key = paramsKey(S.applied);
 		if (key === S.loadedKey && !S.error && !rescan) {
 			S.staged = keepStaged || clonePairs(S.applied);
@@ -303,21 +338,38 @@
 		clearInterval(loadingTimer);
 		const showLoading = setTimeout(() => {
 			$('#loading').hidden = false;
-			$('#loading-title').textContent = rescan ? 'Updating outdated profiles…' : fullscan ? 'Running full scan…' : 'Loading students…';
+			$('#loading-title').textContent = rescan ? 'Rescanning…' : fullscan ? 'Running full scan…' : 'Loading students…';
 			const bar = $('#loading-progress');
 			bar.hidden = true;
-			const updateSub = async () => {
+			// the last progress seen: kept between polls so the text is written once per tick, never reset
+			let scan = null;
+			let polling = false;
+			const setText = (el, text) => { if (el.textContent !== text) el.textContent = text; };
+			const paint = () => {
 				const elapsed = fmtDuration(Date.now() - started);
-				$('#loading-sub').textContent = `Elapsed ${elapsed}`;
-				if (!fullscan) return;
-				try {
-					const scan = await (await fetch('/api/scan')).json();
-					if (loadController !== controller || !scan.active) return;
+				if (!scan) { setText($('#loading-sub'), `Elapsed ${elapsed}`); return; }
+				if (scan.phase === 'students') {
+					setText($('#loading-title'), 'Fetching the student list again…');
+					setText($('#loading-sub'), `${fmtNum(scan.done)}${scan.total ? ' of ' + fmtNum(scan.total) : ''} students · ${elapsed}`);
+				} else {
 					const left = scan.total - scan.done;
-					$('#loading-sub').textContent = `Fetched ${fmtNum(scan.done)} of ${plural(scan.total, 'profile')} from the 42 API · ${left ? apiEstimate(left) + ' left' : 'finishing'} · ${elapsed}`;
-					bar.hidden = false;
-					bar.firstElementChild.style.width = `${scan.total ? scan.done / scan.total * 100 : 0}%`;
-				} catch (e) { /* keep the elapsed time */ }
+					setText($('#loading-title'), rescan ? 'Fetching profiles again…' : 'Running full scan…');
+					setText($('#loading-sub'), `Fetched ${fmtNum(scan.done)} of ${plural(scan.total, 'profile')} from the 42 API · ${left ? apiEstimate(left) + ' left' : 'finishing'} · ${elapsed}`);
+				}
+				bar.hidden = false;
+				bar.firstElementChild.style.width = `${scan.total ? scan.done / scan.total * 100 : 0}%`;
+			};
+			const updateSub = async () => {
+				paint();
+				// one poll at a time: a slow answer must not land after a newer one
+				if ((!fullscan && !rescan) || polling) return;
+				polling = true;
+				try {
+					const next = await (await fetch('/api/scan')).json();
+					if (loadController !== controller) return;
+					// between the list and the profiles nothing is active: keep the last progress
+					if (next.active) { scan = next; paint(); }
+				} catch (e) { /* keep the last progress */ } finally { polling = false; }
 			};
 			updateSub();
 			loadingTimer = setInterval(updateSub, 1000);
@@ -325,7 +377,10 @@
 
 		try {
 			const params = new URLSearchParams(S.applied);
-			if (rescan) params.set('rescan', '1');
+			if (rescan) {
+				params.set('rescan', ['students', 'profiles'].filter((k) => rescan[k]).join(','));
+				if (rescan.force) params.set('force', '1');
+			}
 			const qs = params.toString();
 			const res = await fetch('/api/search' + (qs ? '?' + qs : ''), { signal: controller.signal });
 			if (!res.ok) throw new Error(`Server responded ${res.status}`);
@@ -333,6 +388,7 @@
 			ingest(data);
 			S.loadedKey = key;
 			S.error = null;
+			if (rescan) reportRescan(data.meta.rescanned);
 		} catch (e) {
 			if (e.name === 'AbortError') return;
 			console.error(e);
@@ -722,7 +778,7 @@
 				out.push(`
 					<div class="notice warn"><i class="fa fa-exclamation-triangle"></i>
 						<div class="notice-body"><div class="notice-title">${plural(failed, 'profile')} could not be fetched</div>
-						<div class="notice-text">Those students have no exam or project data. They'll be retried once their cache entry expires.</div></div>
+						<div class="notice-text">Those students have no exam or project data. They're fetched again by the next full scan or <b>Rescan</b>.</div></div>
 					</div>`);
 			}
 		}
@@ -787,10 +843,100 @@
 			</div>`;
 	}
 
+	/** What a rescan would fetch with the current options, for the current result. */
+	function rescanPlan(opts = S.rescan) {
+		const m = S.meta;
+		const hours = m.cacheHours;
+		const listAge = m.studentsFetchedAt ? Date.now() / 1000 - m.studentsFetchedAt : null;
+		const list = {
+			available: m.campusId !== null && m.campusId !== undefined,
+			age: listAge,
+			outdated: listAge === null || listAge > hours * 3600,
+		};
+		list.fetch = list.available && opts.students && (opts.force || list.outdated);
+		list.requests = list.fetch ? Math.max(1, Math.ceil(m.total / 100)) : 0;
+		const missing = Math.max(0, m.count - (m.cachedCount || 0));
+		const outdated = m.outdatedCount || 0;
+		const profiles = { missing, outdated, fetch: opts.profiles ? (opts.force ? m.count : missing + outdated) : 0 };
+		return { list, profiles, requests: list.requests + profiles.fetch, hours };
+	}
+
 	function rescanButton() {
-		if (!S.meta?.fullscan || !S.meta.count) return '';
-		const n = S.meta.outdatedCount || 0;
-		return `<button class="btn btn-sm" data-act="rescan" ${n ? '' : 'disabled'} title="${n ? `Fetch again the ${plural(n, 'profile')} cached more than ${S.meta.cacheHours}h ago (${apiEstimate(n)})` : `Every profile was fetched in the last ${S.meta.cacheHours}h`}"><i class="fa fa-refresh"></i>Rescan${n ? ` · ${fmtNum(n)}` : ''}</button>`;
+		const m = S.meta;
+		if (!m || m.error) return '';
+		const plan = rescanPlan({ students: true, profiles: true, force: false });
+		const stale = (plan.list.available && plan.list.outdated ? 1 : 0) + (m.fullscan ? plan.profiles.outdated : 0);
+		return `<button class="btn btn-sm" data-act="rescan-menu" title="Fetch the student list and the profiles again from the 42 API"><i class="fa fa-refresh"></i>Rescan${stale ? '<span class="stale-dot" title="Some data is older than ' + m.cacheHours + 'h"></span>' : ''}<i class="fa fa-caret-down muted"></i></button>`;
+	}
+
+	function renderRescanMenu() {
+		const m = S.meta;
+		const o = S.rescan;
+		const plan = rescanPlan();
+		const { list, profiles, hours } = plan;
+		const campus = m.campuses.find((c) => c.id === m.campusId);
+		const listDesc = !list.available
+			? 'Not available for the default <code>students.json</code>'
+			: `${esc(campus?.name || 'Campus ' + m.campusId)} · fetched ${fmtAgo(m.studentsFetchedAt)} · ${list.outdated ? `<span class="warn-text">older than ${hours}h</span>` : 'up to date'}`;
+		const profDesc = `${plural(m.count, 'student')} in this result: ${fmtNum(profiles.missing)} never fetched, ${fmtNum(profiles.outdated)} older than ${hours}h${m.fullscan ? '' : ' · <span class="warn-text">turns on full scan</span>'}`;
+		const what = [list.fetch && `the student list (${plural(list.requests, 'request')})`, profiles.fetch && plural(profiles.fetch, 'profile')].filter(Boolean);
+		const nothing = !what.length;
+		return `
+			<div class="popover-head"><div class="v">Rescan from the 42 API</div>
+				<div class="field-hint">Nothing already fetched is removed.</div></div>
+			<div class="rs-opts">
+				<label class="switch rs-opt ${list.available ? '' : 'disabled'}"><input type="checkbox" data-bind="rs-students" ${o.students && list.available ? 'checked' : ''} ${list.available ? '' : 'disabled'}><span class="track"></span>
+					<span><b>Student list</b><small>${listDesc}</small></span></label>
+				<label class="switch rs-opt"><input type="checkbox" data-bind="rs-profiles" ${o.profiles ? 'checked' : ''}><span class="track"></span>
+					<span><b>Profiles</b> <span class="muted">exams, projects, cursus</span><small>${profDesc}</small></span></label>
+				<label class="switch rs-opt rs-force"><input type="checkbox" data-bind="rs-force" ${o.force ? 'checked' : ''}><span class="track"></span>
+					<span><b>Force</b><small>Fetch everything selected again, even what was fetched in the last ${hours}h. Without it, only what is missing or older than ${hours}h is fetched.</small></span></label>
+			</div>
+			<div class="rs-foot">
+				<span class="field-hint">${nothing ? (o.students || o.profiles ? `Everything is up to date — turn on <b>Force</b> to fetch it anyway` : 'Select what to fetch') : `Fetches ${what.join(' and ')} · ${apiEstimate(plan.requests)}`}</span>
+				<button class="btn btn-primary btn-sm" data-act="rescan-go" ${nothing ? 'disabled' : ''}><i class="fa fa-refresh"></i>Rescan</button>
+			</div>`;
+	}
+
+	function openRescanMenu(anchor) {
+		closeMenu();
+		S.rescanOpen = true;
+		S.rescan.force = false;
+		const pop = $('#popover');
+		pop.classList.add('popover-wide');
+		pop.innerHTML = renderRescanMenu();
+		placePopover(anchor);
+	}
+
+	function startRescan() {
+		const plan = rescanPlan();
+		if (!plan.requests) return;
+		const opts = { students: plan.list.fetch, profiles: S.rescan.profiles, force: S.rescan.force };
+		closeMenu();
+		const pending = clonePairs(S.staged);
+		// profiles only exist with a full scan
+		if (opts.profiles && !S.meta.fullscan) {
+			setParam(S.applied, 'fullscan', '');
+			setParam(pending, 'fullscan', '');
+			syncUrl(true);
+		}
+		load({ rescan: opts, keepStaged: pending });
+	}
+
+	function reportRescan(r) {
+		if (!r) return;
+		if (r.studentsError) toast(`Couldn't fetch the student list: ${esc(r.studentsError)}`, null, 7000);
+		const parts = [];
+		if (r.students) {
+			parts.push(r.students.skipped
+				? 'student list already up to date'
+				: `${plural(r.students.count, 'student')} in the list${r.students.kept ? ` (+${fmtNum(r.students.kept)} older kept)` : ''}`);
+		}
+		if (r.profiles) {
+			parts.push(r.profiles.fetched || r.profiles.failed ? `${plural(r.profiles.fetched, 'profile')} fetched again` : 'every profile already up to date');
+			if (r.profiles.failed) parts.push(`${fmtNum(r.profiles.failed)} failed`);
+		}
+		if (parts.length) toast(`Rescan done: ${parts.join(', ')}`, null, 6000);
 	}
 
 	function renderStudents() {
@@ -839,6 +985,12 @@
 		return `${fv('pool_month', u.pool_month, esc(humanize(u.pool_month)))} ${fv('pool_year', u.pool_year)}`;
 	}
 
+	/** " · piscine ends in 3 weeks" for students whose current cursus is a piscine. */
+	function piscineEnd(u) {
+		const c = (u.cursus_users || []).find((x) => x.cursus?.kind === 'piscine' && x.end_at && daysUntil(x.end_at) > 0);
+		return c ? ` · <span title="${esc(fmtDateTime(c.end_at))}">piscine ends ${esc(fmtRel(c.end_at))}</span>` : '';
+	}
+
 	function renderCards(list) {
 		const fullscan = S.meta.fullscan;
 		return `<div class="grid-cards">${list.map((u) => {
@@ -857,6 +1009,7 @@
 						<div class="card-name">
 							<span class="login">${fv('login', u.login)}</span>
 							<span class="display" title="${esc(u.displayname)}">${esc(u.displayname)}</span>
+							<a class="card-link" href="${esc(intraUrl(u.login))}" target="_blank" rel="noreferrer" title="Open intra profile"><i class="fa fa-external-link"></i></a>
 						</div>
 						<div class="card-meta text-2"><i class="fa fa-calendar-o muted"></i>&nbsp;${poolText(u)}${fullscan ? `<span style="margin-left:auto">${stageBadge(u)}</span>` : ''}</div>
 						<div class="card-stats">
@@ -943,7 +1096,7 @@
 									${u.location ? `<span class="badge ok">${fv('location', u.location)}</span>` : ''}
 								</div>
 								<div class="display" title="${esc(u.displayname)}">${esc(u.displayname)}</div>
-								<div class="contact"><i class="fa fa-envelope-o"></i>${fv('email', u.email)}</div>
+								<div class="contact">${u.email ? mailLink(u.email) + fv('email', u.email) : '<span class="muted">No email</span>'}</div>
 								<div class="badges">
 									${fullscan ? stageBadge(u) : ''}
 									${u.pool_year ? `<span class="badge"><i class="fa fa-calendar-o"></i>${poolText(u)}</span>` : ''}
@@ -951,7 +1104,7 @@
 									${u['staff?'] ? '<span class="badge warn">Staff</span>' : ''}
 									${u['alumni?'] ? '<span class="badge info">Alumni</span>' : ''}
 								</div>
-								<div class="dates">Joined ${fmtDate(u.created_at)} · Updated ${fmtDate(u.updated_at)}</div>
+								<div class="dates"><span title="${esc(fmtDateTime(u.created_at))}">Joined ${esc(fmtRel(u.created_at))}</span> · <span title="${esc(fmtDateTime(u.updated_at))}">updated ${esc(fmtRel(u.updated_at))}</span>${S.meta.fullscan ? piscineEnd(u) : ''}</div>
 							</div>
 							<div class="srow-stats">
 								${stat('Level', fullscan ? levelStat(u) : dash)}
@@ -963,7 +1116,7 @@
 							</div>
 							<div class="srow-work">${renderWork(u)}</div>
 							<div class="srow-actions">
-								<a class="btn btn-ghost btn-sm icon-btn" href="https://profile.intra.42.fr/users/${esc(u.login)}" target="_blank" rel="noreferrer" title="Open intra profile"><i class="fa fa-external-link"></i></a>
+								<a class="btn btn-ghost btn-sm icon-btn" href="${esc(intraUrl(u.login))}" target="_blank" rel="noreferrer" title="Open intra profile"><i class="fa fa-external-link"></i></a>
 								<span class="btn btn-ghost btn-sm icon-btn" title="Details"><i class="fa fa-chevron-right"></i></span>
 							</div>
 						</article>`;
@@ -1126,7 +1279,7 @@
 			<div class="table-wrap">
 				<table class="data">
 					<thead><tr>
-						${sh('student', 'Student')}${sh('name', K.label)}${sh('mark', 'Mark')}${sh('result', 'Result')}${sh('status', 'Status')}${sh('occ', 'Attempt', 'r')}${sh('date', 'Date', 'r')}
+						${sh('student', 'Student')}${sh('name', K.label)}${sh('mark', 'Mark')}${sh('result', 'Result')}${sh('status', 'Status')}${sh('occ', 'Attempt', 'r')}${sh('date', 'Date', 'r')}<th></th>
 					</tr></thead>
 					<tbody>
 						${slice.map((r) => `
@@ -1137,7 +1290,8 @@
 								<td>${resultBadge(r.ok)}</td>
 								<td>${statusBadge(r.status)}</td>
 								<td class="r num">${r.occ === null ? '—' : '#' + (r.occ + 1)}</td>
-								<td class="r num" title="${esc(r.date || '')}">${fmtDate(r.date)}</td>
+								<td class="r num" title="${esc(fmtDateTime(r.date))}">${fmtDate(r.date)}<div class="field-hint">${esc(fmtRel(r.date))}</div></td>
+								<td class="r">${projectUrl(r.e) ? `<a class="btn btn-ghost btn-xs icon-btn" href="${esc(projectUrl(r.e))}" target="_blank" rel="noreferrer" title="Open on the intra"><i class="fa fa-external-link"></i></a>` : ''}</td>
 							</tr>`).join('')}
 					</tbody>
 				</table>
@@ -1239,6 +1393,8 @@
 		}
 		for (const [k, v] of Object.entries(obj)) {
 			if (!prefix && (k.startsWith('_') || ['all_projects', 'projects_users', 'matched_exams', 'matched_projects', 'pool'].includes(k))) continue;
+			// each cursus repeats the whole user
+			if (k === 'user' && keyPath === 'cursus_users') continue;
 			flattenScalars(v, prefix ? `${prefix}.${k}` : k, keyPath ? `${keyPath}.${k}` : k, out);
 		}
 		return out;
@@ -1255,12 +1411,14 @@
 			['overview', 'Overview', 'fa-user'],
 			['exams', `Exams${fullscan ? ` <span class="tab-count">${u._exams.length}</span>` : ''}`, 'fa-graduation-cap'],
 			['projects', `Projects${fullscan ? ` <span class="tab-count">${u._projects.length}</span>` : ''}`, 'fa-folder-open-o'],
+			['fields', 'All fields', 'fa-list-ul'],
 			['json', 'JSON', 'fa-code'],
 		];
 		const stat = (k, v) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`;
 
 		let content = '';
 		if (S.drawer.tab === 'overview') content = renderOverview(u);
+		else if (S.drawer.tab === 'fields') content = renderFields(u);
 		else if (S.drawer.tab === 'json') content = renderJson(u);
 		else content = fullscan ? renderEntries(u, S.drawer.tab) : `
 			<div class="empty"><i class="fa ${KIND[S.drawer.tab].icon}"></i><h3>Not loaded</h3><p>Run a full scan to load this student's ${S.drawer.tab}.</p>
@@ -1274,17 +1432,23 @@
 					${pos >= 0 ? `<span class="muted num" style="font-size:12px">${fmtNum(pos + 1)} / ${fmtNum(nav.length)}</span>` : ''}
 				</div>
 				<h2></h2>
-				<a class="btn btn-sm" href="https://profile.intra.42.fr/users/${esc(u.login)}" target="_blank" rel="noreferrer"><i class="fa fa-external-link"></i>Intra profile</a>
+				${refreshButton(u)}
+				<a class="btn btn-sm" href="${esc(intraUrl(u.login))}" target="_blank" rel="noreferrer"><i class="fa fa-external-link"></i>Intra profile</a>
 				<button class="btn btn-ghost icon-btn" data-act="close-sheets" aria-label="Close (Esc)"><i class="fa fa-times"></i></button>
 			</div>
 			<div class="sheet-body">
 				<div class="student-hero">
 					<div class="hero-photo photo" ${zoomAttrs(u)}>${photo(u)}</div>
 					<div class="names">
-						<h2>${fv('login', u.login)}${u.location ? `<span class="badge ok"><span class="dot online"></span>${esc(u.location)}</span>` : ''}</h2>
-						<div class="display">${esc(u.displayname)} · ${fv('email', u.email)}</div>
+						<h2>${fv('login', u.login)}${u.location ? `<span class="badge ok" title="Logged in at ${esc(u.location)}"><span class="dot online"></span>${fv('location', u.location)}</span>` : '<span class="badge" title="Not logged in on a campus computer">Offline</span>'}</h2>
+						<div class="display">${esc(u.displayname)}</div>
+						<div class="contact-line">
+							${u.email ? `<span>${mailLink(u.email)}${fv('email', u.email)}<button class="btn btn-ghost btn-xs icon-btn" data-act="copy" data-v="${esc(u.email)}" title="Copy email"><i class="fa fa-clipboard"></i></button></span>` : ''}
+							${u.phone && u.phone !== 'hidden' ? `<span><a class="ext" href="tel:${esc(u.phone)}"><i class="fa fa-phone"></i></a>${esc(u.phone)}</span>` : ''}
+						</div>
 						<div class="badges">
 							${u.kind ? `<span class="badge accent">${fv('kind', u.kind)}</span>` : ''}
+							${gradeBadges(u)}
 							${u.pool_year ? `<span class="badge"><i class="fa fa-calendar-o"></i>${poolText(u)}</span>` : ''}
 							${stageBadge(u)}
 							${u['staff?'] ? '<span class="badge warn">Staff</span>' : ''}
@@ -1308,7 +1472,151 @@
 			</div>`;
 	}
 
+	/** When the profile shown was fetched from the 42 API, and a button to fetch it again. */
+	function refreshButton(u) {
+		if (!S.meta.fullscan) return '';
+		const at = Number(u.lastSave);
+		const busy = S.refreshing === u.id;
+		return `<button class="btn btn-sm" data-act="refresh-student" data-id="${u.id}" ${busy ? 'disabled' : ''} title="Profile fetched ${at ? fmtAgo(at) + ` (${esc(new Date(at * 1000).toLocaleString())})` : 'never'} — fetch it again now">
+			${busy ? '<span class="spinner spinner-sm"></span>' : '<i class="fa fa-refresh"></i>'}${at ? `<span class="muted">${fmtAgo(at)}</span>` : 'Fetch'}</button>`;
+	}
+
+	/** Grade of each cursus ("Learner", "Member"…) when it says more than the stage badge. */
+	function gradeBadges(u) {
+		const stage = String(STAGES[u.stage]?.short || '').toLowerCase();
+		return (u.cursus_users || []).filter((c) => c.grade && c.grade.toLowerCase() !== stage)
+			.map((c) => `<span class="badge info" title="${esc(c.cursus?.name || '')} grade">${fv('cursus_users.grade', c.grade)}</span>`).join('');
+	}
+
+	/** Countdown badge for a date in the future (end of piscine, blackhole…). */
+	function countdown(iso, { warnDays = 14, badDays = 3, past = 'ended' } = {}) {
+		if (!iso) return '';
+		const days = daysUntil(iso);
+		if (days < 0) return `<span class="badge" title="${esc(fmtDateTime(iso))}">${esc(past)} ${esc(fmtRel(iso))}</span>`;
+		const cls = days <= badDays ? 'bad' : days <= warnDays ? 'warn' : 'ok';
+		return `<span class="badge ${cls}" title="${esc(fmtDateTime(iso))}">${esc(fmtRel(iso))}</span>`;
+	}
+
+	function renderCursus(c) {
+		const level = isNum(c.level) ? c.level : null;
+		const pct = level === null ? 0 : Math.round((level % 1) * 100);
+		const skills = sortBy(c.skills || [], (sk) => sk.level, 'desc');
+		const maxSkill = Math.max(10, ...skills.map((sk) => sk.level || 0));
+		const piscine = c.cursus?.kind === 'piscine';
+		return `
+			<div class="cursus-card">
+				<div class="cursus-head">
+					<div>
+						<div class="cursus-name">${fv('cursus_users.cursus.name', c.cursus?.name || `Cursus ${c.cursus_id}`)}</div>
+						<div class="field-hint">${esc(humanize(c.cursus?.kind || ''))}${c.grade ? ` · ${esc(c.grade)}` : ''}${c.has_coalition ? ' · has a coalition' : ''}</div>
+					</div>
+					<div class="cursus-level">
+						<span class="k">Level</span>
+						<b class="num">${level === null ? '—' : fmtNum(level, 2)}</b>
+					</div>
+				</div>
+				<span class="lvl-track" title="${pct}% to level ${level === null ? 1 : Math.floor(level) + 1}"><i style="width:${pct}%"></i></span>
+				<div class="cursus-dates">
+					<div><span class="k">Started</span>${dateRel(c.begin_at)}</div>
+					<div><span class="k">${piscine ? 'Piscine ends' : 'Ends'}</span>${c.end_at ? `${fmtDate(c.end_at)} ${countdown(c.end_at, { warnDays: 7, badDays: 2 })}` : '<span class="muted">—</span>'}</div>
+					${c.blackholed_at || !piscine ? `<div><span class="k">Blackhole</span>${c.blackholed_at ? `${fmtDate(c.blackholed_at)} ${countdown(c.blackholed_at, { warnDays: 30, badDays: 7, past: 'absorbed' })}` : '<span class="muted">none</span>'}</div>` : ''}
+				</div>
+				${skills.length ? `
+					<div class="skills">
+						${skills.map((sk) => `
+							<div class="skill" title="${esc(sk.name)}: level ${fmtNum(sk.level, 2)}">
+								<span class="name">${esc(sk.name)}</span>
+								<span class="bar"><i style="width:${Math.min(100, (sk.level || 0) / maxSkill * 100)}%"></i></span>
+								<span class="num">${fmtNum(sk.level, 2)}</span>
+							</div>`).join('')}
+					</div>` : '<div class="field-hint">No skills yet</div>'}
+			</div>`;
+	}
+
 	function renderOverview(u) {
+		const loaded = S.meta.fullscan && Array.isArray(u.cursus_users);
+		const campus = Array.isArray(u.campus) ? u.campus : [];
+		const fact = (k, v) => `<div class="fact"><div class="k">${k}</div><div class="v">${v}</div></div>`;
+		const status = [u['active?'] === false ? 'Inactive' : 'Active', u['staff?'] && 'Staff', u['alumni?'] && `Alumni${u.alumnized_at ? ' ' + fmtRel(u.alumnized_at) : ''}`].filter(Boolean).join(' · ');
+		const listOf = (items, name) => items.map((x) => `<span class="badge">${esc(name(x))}</span>`).join('');
+		const extras = [
+			['Titles', u.titles, (t) => String(t.name || '').replace('%login', u.login)],
+			['Groups', u.groups, (g) => g.name],
+			['Roles', u.roles, (r) => r.name],
+			['Expertises', u.expertises_users, (e) => e.expertise?.name || `#${e.expertise_id}`],
+		].filter(([, items]) => Array.isArray(items) && items.length);
+		const achievements = Array.isArray(u.achievements) ? u.achievements : [];
+		return `
+			<section class="ov-section">
+				<h4>Profile</h4>
+				<div class="facts">
+					${fact('Pool', u.pool_year ? poolText(u) : '<span class="muted">—</span>')}
+					${fact('Joined', dateRel(u.created_at))}
+					${fact('Last update', dateRel(u.updated_at))}
+					${fact('Location', u.location ? `<span class="dot online"></span>${fv('location', u.location)}` : '<span class="muted">Offline</span>')}
+					${fact('Status', esc(status))}
+					${fact('Wallet', `${fv('wallet', u.wallet, fmtNum(u.wallet))} ₳`)}
+					${u.data_erasure_date ? fact('Data erased', dateRel(u.data_erasure_date)) : ''}
+					${loaded && u.lastSave ? fact('Profile fetched', `<span title="${esc(new Date(Number(u.lastSave) * 1000).toLocaleString())}">${fmtAgo(Number(u.lastSave))}</span>`) : ''}
+				</div>
+			</section>
+			${campus.length ? `
+				<section class="ov-section">
+					<h4>Campus</h4>
+					${campus.map((c) => `
+						<div class="campus-line">
+							<div><b>${fv('campus.name', c.name)}</b> <span class="muted">${esc([c.city, c.country].filter(Boolean).join(', '))}</span></div>
+							<div class="field-hint">${esc([c.address, c.zip, c.city].filter(Boolean).join(', '))}${c.time_zone ? ` · ${esc(c.time_zone)}` : ''}${c.language?.name ? ` · ${esc(c.language.name)}` : ''}</div>
+							<div class="links">
+								${c.website ? extLink(c.website, esc(c.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, ''))) : ''}
+								${c.facebook ? extLink(c.facebook, 'Facebook') : ''}
+								${c.twitter ? extLink(c.twitter, 'Twitter') : ''}
+								${c.email_extension ? `<span class="muted">@${esc(c.email_extension)}</span>` : ''}
+							</div>
+						</div>`).join('')}
+				</section>` : ''}
+			${loaded ? `
+				<section class="ov-section">
+					<h4>Cursus <span class="muted">${u.cursus_users.length}</span></h4>
+					${u.cursus_users.length ? sortBy(u.cursus_users, (c) => c.begin_at, 'desc').map(renderCursus).join('') : '<p class="muted">Not enrolled in any cursus.</p>'}
+				</section>
+				${achievements.length ? `
+					<section class="ov-section">
+						<h4>Achievements <span class="muted">${achievements.length}</span></h4>
+						<div class="achievements">
+							${achievements.map((a) => `
+								<div class="achievement" title="${esc(a.description || '')}">
+									<i class="fa fa-trophy tier-${esc(a.tier || 'none')}"></i>
+									<div><b>${esc(a.name)}</b><div class="field-hint">${esc(a.description || '')}</div></div>
+									${a.kind ? `<span class="badge">${esc(a.kind)}</span>` : ''}
+								</div>`).join('')}
+						</div>
+					</section>` : ''}
+				${extras.map(([title, items, name]) => `<section class="ov-section"><h4>${title}</h4><div class="badges">${listOf(items, name)}</div></section>`).join('')}` : `
+				<div class="srow-placeholder"><i class="fa fa-bolt"></i>Cursus, level, skills and achievements appear after a full scan.
+					<button class="btn btn-primary btn-xs" data-act="fullscan-on" style="margin-left:auto">Run full scan</button></div>`}`;
+	}
+
+	/** A raw field value: links, emails and dates are shown as such. */
+	function fieldValue(r) {
+		if (r.empty) return '<span class="muted">empty</span>';
+		if (r.value === null || r.value === undefined) return fv(r.key, r.value, '<span class="muted">null</span>');
+		const v = r.value;
+		if (typeof v === 'string') {
+			if (/^https?:\/\//.test(v)) {
+				const href = browsableUrl(v);
+				if (!href) return `<span class="text-2" title="42 API link (needs a token)">${esc(v)}</span>`;
+				const img = /\.(jpe?g|png|gif|svg|webp)$/i.test(v);
+				return `${img ? `<img class="kv-thumb" src="${esc(v)}" alt="" loading="lazy" onerror="this.remove()">` : ''}${extLink(href, esc(href), href !== v ? `Intra profile (the API link ${v} needs a token)` : '')}`;
+			}
+			if (/(^|\.)email$/.test(r.key) && v.includes('@')) return `${mailLink(v)} ${fv(r.key, v)}`;
+			if (ISO_DATE.test(v)) return fv(r.key, v, `${esc(fmtDateTime(v))} <span class="muted">· ${esc(fmtRel(v))}</span>`);
+		}
+		if (typeof v === 'boolean') return fv(r.key, v, `<span class="bool ${v}">${v ? 'yes' : 'no'}</span>`);
+		return fv(r.key, v);
+	}
+
+	function renderFields(u) {
 		const q = S.drawer.q.toLowerCase();
 		const rows = flattenScalars(u).filter((r) => !q || r.path.toLowerCase().includes(q) || String(r.value ?? '').toLowerCase().includes(q));
 		return `
@@ -1319,7 +1627,7 @@
 			<div class="kv">
 				${rows.map((r) => `
 					<div class="k" title="Filter key: ${esc(r.key)}">${esc(r.path)}</div>
-					<div class="v">${r.empty ? '<span class="muted">empty</span>' : String(r.value).startsWith('http') ? `<a href="${esc(r.value)}" target="_blank" rel="noreferrer" class="text-2">${esc(r.value)}</a>` : fv(r.key, r.value, r.value === null ? '<span class="muted">null</span>' : esc(r.value))}</div>`).join('')}
+					<div class="v">${fieldValue(r)}</div>`).join('')}
 			</div>
 			${rows.length ? '' : '<p class="muted" style="margin-top:12px">No field matches.</p>'}`;
 	}
@@ -1356,20 +1664,37 @@
 			${list.length ? `
 				<div class="table-wrap">
 					<table class="data compact">
-						<thead><tr>${sh('name', K.label)}${sh('mark', 'Mark')}${sh('result', 'Result')}${sh('status', 'Status')}${sh('occ', 'Attempt', 'r')}${sh('date', 'Date', 'r')}</tr></thead>
+						<thead><tr>${sh('name', K.label)}${sh('mark', 'Mark')}${sh('result', 'Result')}${sh('status', 'Status')}${sh('occ', 'Attempt', 'r')}${sh('date', 'Date', 'r')}<th></th></tr></thead>
 						<tbody>
 							${list.map((e) => `
 								<tr class="${hasNameFilter && !u._matched.has(e.id) ? 'dim' : ''}">
 									<td>${fvEntry(kind, e.project?.name || e.project?.slug)}</td>
 									<td>${markPill(e.final_mark, e['validated?'])}</td>
 									<td>${resultBadge(e['validated?'] ?? null)}</td>
-									<td>${statusBadge(e.status)}</td>
+									<td>${statusBadge(e.status)}${e.retriable_at && daysUntil(e.retriable_at) > 0 ? ` <span class="badge" title="Can retry ${esc(fmtDateTime(e.retriable_at))}"><i class="fa fa-clock-o"></i>retry ${esc(fmtRel(e.retriable_at))}</span>` : ''}</td>
 									<td class="r num">${isNum(e.occurrence) ? '#' + (e.occurrence + 1) : '—'}</td>
-									<td class="r num">${fmtDate(e.marked_at || e.updated_at)}</td>
+									<td class="r num" title="${e.marked_at ? 'Marked' : 'Last update'} ${esc(fmtDateTime(e.marked_at || e.updated_at))}">${fmtDate(e.marked_at || e.updated_at)}<div class="field-hint">${esc(fmtRel(e.marked_at || e.updated_at))}</div></td>
+									<td class="r">${projectUrl(e) ? `<a class="btn btn-ghost btn-xs icon-btn" href="${esc(projectUrl(e))}" target="_blank" rel="noreferrer" title="Open on the intra"><i class="fa fa-external-link"></i></a>` : ''}</td>
 								</tr>`).join('')}
 						</tbody>
 					</table>
 				</div>` : `<div class="empty"><i class="fa fa-search"></i><h3>No ${K.labels.toLowerCase()}</h3></div>`}`;
+	}
+
+	async function refreshStudent(id) {
+		S.refreshing = id;
+		renderDrawer();
+		try {
+			await postJson(`/api/students/${id}/refresh`);
+			S.loadedKey = null;
+			await load({ keepStaged: clonePairs(S.staged) });
+			toast(`Profile of <b>${esc(S.byId.get(id)?.login || id)}</b> updated`);
+		} catch (e) {
+			toast(`Couldn't refresh the profile: ${esc(e.message)}`, null, 6000);
+		} finally {
+			S.refreshing = null;
+			if (S.drawer.id === id) renderDrawer();
+		}
 	}
 
 	function highlightJson(json) {
@@ -1599,10 +1924,25 @@
 
 	function closeMenu() {
 		$('#popover').hidden = true;
+		$('#popover').classList.remove('popover-wide');
 		S.menu = null;
+		S.rescanOpen = false;
+	}
+
+	function placePopover(anchor) {
+		const pop = $('#popover');
+		pop.hidden = false;
+		const r = anchor.getBoundingClientRect();
+		const pw = pop.offsetWidth, ph = pop.offsetHeight;
+		let left = Math.min(r.left, window.innerWidth - pw - 8);
+		let top = r.bottom + 6;
+		if (top + ph > window.innerHeight - 8) top = Math.max(8, r.top - ph - 6);
+		pop.style.left = Math.max(8, left) + 'px';
+		pop.style.top = top + 'px';
 	}
 
 	function openMenu(anchor, head, items) {
+		closeMenu();
 		S.menu = items;
 		const pop = $('#popover');
 		pop.innerHTML = `
@@ -1613,14 +1953,7 @@
 					<span>${it.label}</span>
 					${it.kbd ? `<kbd>${it.kbd}</kbd>` : ''}
 				</button>`).join('')}`;
-		pop.hidden = false;
-		const r = anchor.getBoundingClientRect();
-		const pw = pop.offsetWidth, ph = pop.offsetHeight;
-		let left = Math.min(r.left, window.innerWidth - pw - 8);
-		let top = r.bottom + 6;
-		if (top + ph > window.innerHeight - 8) top = Math.max(8, r.top - ph - 6);
-		pop.style.left = Math.max(8, left) + 'px';
-		pop.style.top = top + 'px';
+		placePopover(anchor);
 		pop.querySelector('.menu-item')?.focus();
 	}
 
@@ -1683,7 +2016,7 @@
 
 	/* ---------- Campus manager ---------- */
 
-	const CM = { open: false, data: null, jobs: null, q: '', filter: 'all', sel: new Set(), seen: null, timer: null };
+	const CM = { open: false, data: null, jobs: null, q: '', filter: 'all', sel: new Set(), seen: null, timer: null, force: false };
 
 	function fmtAgo(ts) {
 		if (!ts) return 'never';
@@ -1746,7 +2079,7 @@
 
 	function onJobFinished(job) {
 		if (job.status === 'cancelled') {
-			const kept = job.type === 'details' && job.phase !== 'students' && job.done;
+			const kept = job.type === 'details' && job.done;
 			toast(`Cancelled: ${esc(job.name)}${kept ? ` (${plural(job.done, 'profile')} kept)` : ''}`);
 			if (kept) { S.loadedKey = null; load({ keepStaged: clonePairs(S.staged) }); }
 			return;
@@ -1760,11 +2093,13 @@
 			return;
 		}
 		if (job.type === 'details') {
-			const parts = [`${plural(job.fetched, 'profile')} fetched`];
-			if (job.force) parts.unshift(plural(job.count, 'student'));
-			if (job.skipped) parts.push(`${fmtNum(job.skipped)} ${job.force ? 'up to date' : 'already cached'}`);
+			const parts = [`${plural(job.fetched, 'profile')} fetched${job.force ? ' again' : ''}`];
+			if (job.skipped) parts.push(`${fmtNum(job.skipped)} already up to date`);
 			if (job.failed) parts.push(`${fmtNum(job.failed)} failed`);
-			toast(`${job.force ? 'Rescanned' : 'Details ready for'} <b>${esc(job.name)}</b>: ${parts.join(', ')}`, { label: 'Open', run: () => openCampus(job.campusId, true) }, 6000);
+			toast(`Details of <b>${esc(job.name)}</b>: ${parts.join(', ')}`, { label: 'Open', run: () => openCampus(job.campusId, true) }, 6000);
+		} else if (job.skipped) {
+			toast(`Student list of <b>${esc(job.name)}</b> is up to date (${plural(job.count, 'student')}) — turn on <b>Force</b> to fetch it anyway`, null, 6000);
+			return;
 		} else {
 			toast(`Fetched <b>${esc(job.name)}</b>: ${plural(job.count, 'student')}${job.kept ? ` (${fmtNum(job.kept)} older ones kept)` : ''}`, { label: 'Open', run: () => openCampus(job.campusId) }, 6000);
 		}
@@ -1816,9 +2151,10 @@
 		});
 	}
 
+	/** Queues `what` ('students', 'details' or 'both') for campuses, honouring the Force switch. */
 	async function fetchCampuses(ids, what = 'students') {
 		try {
-			handleJobs(await postJson('/api/campuses/fetch', { ids, what }));
+			handleJobs(await postJson('/api/campuses/fetch', { ids, what, force: CM.force }));
 			CM.sel.clear();
 			renderCampusManager();
 		} catch (e) {
@@ -1835,9 +2171,9 @@
 		const pct = job.total ? Math.min(100, Math.round(job.done / job.total * 100)) : null;
 		let right = job.startedAt ? fmtDuration(Date.now() - job.startedAt * 1000) : '';
 		// profiles are fetched one by one at ~2 requests/second
-		const profiles = job.type === 'details' && job.phase !== 'students';
+		const profiles = job.type === 'details';
 		if (profiles && job.total) right = `${apiEstimate(job.total - job.done)} left`;
-		const label = job.status === 'queued' ? (job.force ? 'Rescan queued' : 'Queued')
+		const label = job.status === 'queued' ? `Queued${job.force ? ' · forced' : ''}`
 			: job.cancel ? 'Cancelling…'
 			: `${profiles ? 'Profiles' : 'Students'} ${fmtNum(job.done)}${job.total !== null && job.total !== undefined ? ' / ' + fmtNum(job.total) : ''}`;
 		return `
@@ -1852,17 +2188,29 @@
 			</div>`;
 	}
 
+	const cacheHours = () => CM.data?.cacheHours ?? S.meta?.cacheHours ?? 6;
+
+	/** Profiles a details fetch would request for campus `c` with the current Force switch. */
+	function detailsTodo(c) {
+		if (!c.local) return null;
+		return CM.force ? c.local.count : c.local.count - c.local.detailed + (c.local.outdated || 0);
+	}
+
 	function detailsCell(c) {
 		const job = campusJob(c.id, 'details');
 		if (job) return jobProgress(job);
 		if (!c.local) return '<span class="muted">—</span>';
 		const pct = c.local.count ? Math.round(c.local.detailed / c.local.count * 100) : 0;
-		const left = c.local.count - c.local.detailed;
+		const missing = c.local.count - c.local.detailed;
+		const fresh = c.local.detailed - (c.local.outdated || 0);
 		return `
 			<div class="job-progress">
-				<div class="row"><span>${fmtNum(c.local.detailed)} / ${fmtNum(c.local.count)} profiles</span><span class="muted">${left ? apiEstimate(left) : 'complete'}</span></div>
-				${c.local.outdated ? `<div class="field-hint">${fmtNum(c.local.outdated)} older than ${CM.data?.cacheHours ?? 12}h</div>` : ''}
-				<span class="progress ${pct === 100 ? 'complete' : ''}"><i style="width:${pct}%"></i></span>
+				<div class="row"><span>${fmtNum(c.local.detailed)} / ${fmtNum(c.local.count)} profiles</span><span class="muted">${missing ? `${fmtNum(missing)} missing` : 'complete'}</span></div>
+				<span class="progress stacked" title="${fmtNum(fresh)} fetched in the last ${cacheHours()}h, ${fmtNum(c.local.outdated || 0)} older, ${fmtNum(missing)} never fetched">
+					<i style="width:${pct}%" class="${pct === 100 && !c.local.outdated ? 'complete' : ''}"></i>
+					<i class="fresh" style="width:${c.local.count ? fresh / c.local.count * 100 : 0}%"></i>
+				</span>
+				${c.local.outdated ? `<div class="field-hint">${fmtNum(c.local.outdated)} older than ${cacheHours()}h</div>` : ''}
 			</div>`;
 	}
 
@@ -1870,7 +2218,26 @@
 		const job = campusJob(c.id, 'campus');
 		if (job) return jobProgress(job);
 		if (!c.local) return '<span class="muted">Not fetched</span>';
-		return `<div><span class="dot online" style="display:inline-block;margin-right:8px"></span>${plural(c.local.count ?? 0, 'student')}</div><div class="field-hint">fetched ${fmtAgo(c.local.fetchedAt)}</div>`;
+		return `<div><span class="dot ${c.local.outdatedList ? 'stale' : 'online'}" style="display:inline-block;margin-right:8px"></span>${plural(c.local.count ?? 0, 'student')}</div>
+			<div class="field-hint" title="${esc(new Date(c.local.fetchedAt * 1000).toLocaleString())}">fetched ${fmtAgo(c.local.fetchedAt)}${c.local.outdatedList ? ` · <span class="warn-text">older than ${cacheHours()}h</span>` : ''}</div>`;
+	}
+
+	/** [disabled, title] of a campus's Students button. */
+	function studentsAction(c) {
+		if (campusJob(c.id, 'campus')) return [true, 'Already queued'];
+		if (!c.local) return [false, 'Download the student list'];
+		if (!CM.force && !c.local.outdatedList) return [true, `Fetched ${fmtAgo(c.local.fetchedAt)}, up to date — turn on Force to fetch it again`];
+		return [false, `${CM.force ? 'Force: download' : 'Download'} the student list again (${fetchEstimate(c.local.count)}); students no longer returned are kept`];
+	}
+
+	/** [disabled, title] of a campus's Details button. */
+	function detailsAction(c) {
+		if (campusJob(c.id, 'details')) return [true, 'Already queued'];
+		if (!c.local) return [false, 'Fetch the student list, then every profile'];
+		const n = detailsTodo(c);
+		if (!n) return [true, `Every profile was fetched in the last ${cacheHours()}h — turn on Force to fetch them again`];
+		const what = CM.force ? `all ${fmtNum(n)} profiles again` : `${fmtNum(n)} missing or outdated profiles`;
+		return [false, `Fetch ${what} (${apiEstimate(n)})`];
 	}
 
 	function renderCampusManager() {
@@ -1906,6 +2273,10 @@
 					<div class="segmented">
 						${[['all', 'All'], ['fetched', `Fetched · ${fetchedN}`], ['missing', 'Not fetched']].map(([k, l]) => `<button class="${CM.filter === k ? 'active' : ''}" data-act="cm-filter" data-filter="${k}">${l}</button>`).join('')}
 					</div>
+					<label class="switch cm-force ${CM.force ? 'on' : ''}" title="Fetch again even what was fetched in the last ${cacheHours()}h">
+						<input type="checkbox" data-bind="cm-force" ${CM.force ? 'checked' : ''}><span class="track"></span>
+						<span><b>Force rescan</b><small>${CM.force ? 'Everything is fetched again' : `Only what is missing or older than ${cacheHours()}h`}</small></span>
+					</label>
 					<div class="cm-catalog">
 						<span class="field-hint">List updated ${fmtAgo(data?.catalogFetchedAt)}</span>
 						<button class="btn btn-sm" data-act="cm-catalog" ${catalogJob ? 'disabled' : ''}><i class="fa fa-refresh ${catalogJob ? 'fa-spin' : ''}"></i>Refresh list</button>
@@ -1921,13 +2292,13 @@
 								<th style="width:44px"><button class="cm-check ${allSelected ? 'on' : ''}" data-act="cm-toggle-all" aria-label="Select all"><i class="fa fa-check"></i></button></th>
 								<th>Campus</th><th class="r">Users</th>
 								<th title="The campus's student list (login, name, pool, wallet…)">Students</th>
-								<th title="Full profiles: exams, projects, cursus — what a full scan needs. Cached ${CM.data?.cacheHours ?? 12}h.">Details</th>
+								<th title="Full profiles: exams, projects, cursus — what a full scan needs. Outdated after ${cacheHours()}h.">Details</th>
 								<th class="r"></th>
 							</tr></thead>
 							<tbody>
 								${list.map((c) => {
-									const studentsJob = campusJob(c.id, 'campus');
-									const detailsJob = campusJob(c.id, 'details');
+									const [studentsOff, studentsTitle] = studentsAction(c);
+									const [detailsOff, detailsTitle] = detailsAction(c);
 									return `
 										<tr class="clickable ${c.active === false ? 'dim' : ''}" data-act="cm-toggle" data-id="${c.id}">
 											<td><span class="cm-check ${CM.sel.has(c.id) ? 'on' : ''}"><i class="fa fa-check"></i></span></td>
@@ -1947,16 +2318,11 @@
 												${c.local ? `
 													<button class="btn btn-ghost btn-sm icon-btn" data-act="cm-default" data-id="${c.id}" title="${c.isDefault ? 'Default campus' : 'Make default'}" ${c.isDefault ? 'disabled' : ''}><i class="fa fa-star${c.isDefault ? '' : '-o'}"></i></button>
 													<button class="btn btn-ghost btn-sm" data-act="cm-open" data-id="${c.id}">Open</button>` : ''}
-												<button class="btn btn-sm ${c.local ? '' : 'btn-primary'}" data-act="cm-fetch" data-id="${c.id}" ${studentsJob ? 'disabled' : ''} title="${c.local ? 'Download the student list again' : 'Download the student list'}">
+												<button class="btn btn-sm ${c.local ? '' : 'btn-primary'}" data-act="cm-fetch" data-id="${c.id}" ${studentsOff ? 'disabled' : ''} title="${esc(studentsTitle)}">
 													<i class="fa ${c.local ? 'fa-refresh' : 'fa-users'}"></i>Students
 												</button>
-												<button class="btn btn-sm" data-act="cm-details" data-id="${c.id}" ${detailsJob || (!c.local && !studentsJob) || (c.local && c.local.detailed >= c.local.count) ? 'disabled' : ''}
-													title="${!c.local ? 'Fetch the students first' : c.local.detailed >= c.local.count ? 'Every profile is cached' : `Fetch ${fmtNum(c.local.count - c.local.detailed)} missing profiles (${apiEstimate(c.local.count - c.local.detailed)})`}">
-													<i class="fa fa-id-card-o"></i>Details
-												</button>
-												<button class="btn btn-sm" data-act="cm-rescan" data-id="${c.id}" ${detailsJob || studentsJob || !c.local ? 'disabled' : ''}
-													title="${!c.local ? 'Fetch the students first' : `Fetch the student list again, then the missing profiles and those older than ${CM.data?.cacheHours ?? 12}h (${fmtNum(c.local.count - c.local.detailed + (c.local.outdated || 0))}+ requests). Nothing already fetched is removed.`}">
-													<i class="fa fa-refresh"></i>Rescan
+												<button class="btn btn-sm" data-act="cm-details" data-id="${c.id}" ${detailsOff ? 'disabled' : ''} title="${esc(detailsTitle)}">
+													<i class="fa fa-id-card-o"></i>Details${c.local && detailsTodo(c) ? `<span class="btn-count">${fmtNum(detailsTodo(c))}</span>` : ''}
 												</button>
 											</td>
 										</tr>`;
@@ -1966,12 +2332,12 @@
 						${list.length ? '' : '<p class="muted" style="padding:20px;text-align:center">No campus matches.</p>'}`}
 				</div>
 				<div class="sheet-foot">
-					<span class="field-hint">${queue.length ? `${plural(queue.length, 'job')} running or queued — you can close this window, fetching continues in the background.` : '<b>Students</b>: one request per 100 students. <b>Details</b>: one request per student (~2/s), already cached profiles are skipped. <b>Rescan</b>: students again, then missing and outdated profiles.'}</span>
+					<span class="field-hint">${queue.length ? `${plural(queue.length, 'job')} running or queued — you can close this window, fetching continues in the background.` : `<b>Students</b>: one request per 100 students. <b>Details</b>: one request per student (~2/s). ${CM.force ? '<b>Force</b> is on: everything is fetched again.' : `Only what is missing or older than ${cacheHours()}h is fetched.`}`}</span>
 					<span class="grow"></span>
 					${CM.sel.size ? `<button class="btn btn-ghost" data-act="cm-clear">Clear (${CM.sel.size})</button>` : ''}
-					<button class="btn" data-act="cm-fetch-selected" ${CM.sel.size ? '' : 'disabled'}><i class="fa fa-users"></i>Fetch students</button>
-					<button class="btn" data-act="cm-rescan-selected" ${CM.sel.size ? '' : 'disabled'} title="Fetch the student list again, then the missing and outdated profiles"><i class="fa fa-refresh"></i>Rescan</button>
-					<button class="btn btn-primary" data-act="cm-details-selected" ${CM.sel.size ? '' : 'disabled'} title="Students are fetched first where missing"><i class="fa fa-id-card-o"></i>Fetch details</button>
+					<button class="btn" data-act="cm-fetch-selected" data-what="students" ${CM.sel.size ? '' : 'disabled'}><i class="fa fa-users"></i>Students</button>
+					<button class="btn" data-act="cm-fetch-selected" data-what="details" ${CM.sel.size ? '' : 'disabled'} title="Campuses without a student list get it first"><i class="fa fa-id-card-o"></i>Details</button>
+					<button class="btn btn-primary" data-act="cm-fetch-selected" data-what="both" ${CM.sel.size ? '' : 'disabled'} title="The student list, then the profiles"><i class="fa fa-refresh"></i>${CM.force ? 'Force rescan' : 'Rescan'} both</button>
 				</div>
 			</div>`;
 	}
@@ -2195,14 +2561,15 @@
 			case 'remove-unknown': applyNow((p) => { for (const k of S.meta.unknownKeys) setParam(p, k, null); }); break;
 			case 'dismiss': S.noticeDismissed[d.notice] = true; store.set('dismissed', S.noticeDismissed); renderNotices(); break;
 			case 'retry': S.loadedKey = null; load(); break;
-			case 'rescan':
-				if (confirm(`Fetch again the ${plural(S.meta.outdatedCount, 'profile')} cached more than ${S.meta.cacheHours}h ago? This takes ${apiEstimate(S.meta.outdatedCount)}.`)) load({ rescan: true, keepStaged: clonePairs(S.staged) });
-				break;
+			case 'rescan-menu': ev.stopPropagation(); S.rescanOpen ? closeMenu() : openRescanMenu(el); break;
+			case 'rescan-go': startRescan(); break;
 			case 'open-filters': openFilterPanel(); break;
 			case 'close-sheets': closeSheets(); break;
 			case 'drawer-step': drawerStep(Number(d.delta)); break;
 			case 'drawer-tab': S.drawer.tab = d.tab; S.drawer.q = ''; S.drawer.status = ''; S.drawer.sort = { key: 'date', dir: 'desc' }; renderDrawer(); break;
 			case 'copy-json': copyText(studentJson(S.byId.get(S.drawer.id))); break;
+			case 'copy': copyText(d.v); break;
+			case 'refresh-student': refreshStudent(Number(d.id)); break;
 			case 'facet-toggle': {
 				const ex = S.explorer[S.view];
 				if (ex.sel.has(d.name)) ex.sel.delete(d.name);
@@ -2252,18 +2619,9 @@
 			}
 			case 'cm-clear': CM.sel.clear(); renderCampusManager(); break;
 			case 'cm-fetch': fetchCampuses([Number(d.id)]); break;
-			case 'cm-fetch-selected': fetchCampuses([...CM.sel]); break;
 			case 'cm-details': fetchCampuses([Number(d.id)], 'details'); break;
-			case 'cm-rescan': fetchCampuses([Number(d.id)], 'rescan'); break;
-			case 'cm-rescan-selected': fetchCampuses([...CM.sel], 'rescan'); break;
-			case 'cm-details-selected': {
-				// campuses without a student list get it first: the queue runs in order
-				const missing = [...CM.sel].filter((id) => !CM.data?.campuses.find((c) => c.id === id)?.local);
-				const ids = [...CM.sel];
-				(missing.length ? postJson('/api/campuses/fetch', { ids: missing }) : Promise.resolve())
-					.then(() => fetchCampuses(ids, 'details'));
-				break;
-			}
+			// campuses without a student list get it first: the server queues it before the details
+			case 'cm-fetch-selected': fetchCampuses([...CM.sel], d.what); break;
 			case 'cm-cancel': postJson('/api/jobs/cancel', { id: Number(d.job) }).then((jobs) => { handleJobs(jobs); renderCampusManager(); }).catch((e) => toast(esc(e.message))); break;
 			case 'cm-open': openCampus(Number(d.id)); break;
 			case 'cm-catalog': postJson('/api/campuses/catalog').then(handleJobs).then(() => renderCampusManager()).catch((e) => toast(esc(e.message))); break;
@@ -2288,7 +2646,7 @@
 
 	document.addEventListener('click', (ev) => {
 		const pop = $('#popover');
-		if (!pop.hidden && !pop.contains(ev.target) && !ev.target.closest('.fv-btn')) closeMenu();
+		if (!pop.hidden && !pop.contains(ev.target) && !ev.target.closest('.fv-btn, [data-act="rescan-menu"]')) closeMenu();
 
 		const fvBtn = ev.target.closest('.fv-btn');
 		if (fvBtn) {
@@ -2365,6 +2723,15 @@
 				applyNow((p) => setParam(p, 'campus_id', value || null));
 				break;
 			case 'cm-q': CM.q = value; keepFocus(renderCampusManager); break;
+			case 'cm-force': CM.force = value; renderCampusManager(); break;
+			case 'rs-students':
+			case 'rs-profiles':
+			case 'rs-force': {
+				S.rescan[bind.slice(3)] = value;
+				store.set('rescan', { students: S.rescan.students, profiles: S.rescan.profiles });
+				keepFocus(() => { $('#popover').innerHTML = renderRescanMenu(); });
+				break;
+			}
 			case 'sort-key': setSort(value, ['', 'login', 'displayname', 'location', 'pool_month'].includes(value) ? 'asc' : 'desc'); break;
 			case 'pagesize': {
 				const key = d.scope === 'students' ? S.display : d.scope;

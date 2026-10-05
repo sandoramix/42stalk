@@ -35,17 +35,27 @@ The students list from the 42 API does not include exams, projects or levels. En
 fetches each matching student's profile (one API request per student, ~2 requests/second).
 Field filters are applied *before* fetching: narrow the list down first (e.g. `pool_year`).
 
-### Cache
+### Cache and rescans
 
-Nothing fetched is ever thrown away:
+Nothing fetched is ever thrown away, and data counts as outdated after `CACHE_EXPIRATION_HOURS`
+(6h, in `simpleweb/app.py`):
 
 - **Profiles** are kept in `data/cached_users.json`. A full scan only fetches the profiles that were
-  never fetched; the others are used as they are, however old. **Rescan** (or `rescan`) also fetches
-  again the profiles older than 12h. If the 42 API fails for a student, their previous profile is kept.
+  never fetched; the others are used as they are, however old. If the 42 API fails for a student, their
+  previous profile is kept.
 - **Student lists** (`data/campus_<id>_students.json`) are merged when fetched again: students are
   updated and added, and the ones the 42 API no longer returns stay in the file.
-- In the campus manager, **Details** fetches the missing profiles of a campus, and **Rescan** fetches
-  its student list again, then the missing and outdated profiles.
+
+Both can be fetched again, separately or together, from two places:
+
+- **Rescan** (students page and Exams/Projects tabs) opens a menu: the campus **student list**, the
+  **profiles** of the students in the current result (turns on the full scan), or both.
+- The **campus manager** (cloud button): **Students**, **Details** (profiles) or **Rescan both**, per
+  campus or for the selected ones. Details of a campus without a student list fetch the list first.
+
+Without **Force**, only what is missing or outdated is fetched (a fresh student list is skipped).
+With **Force**, everything selected is fetched again, however recent. A single profile can also be
+fetched again from its drawer (the refresh button next to "Intra profile").
 
 ## Using the interface
 
@@ -67,7 +77,8 @@ Filters live in the URL, so any view can be shared or bookmarked.
 | --- | --- |
 | `<any field>` | e.g. `pool_year=2025`, `kind===student`, `wallet=>=100`, `location=!=` (online) |
 | `fullscan` | fetch exams/projects for each student |
-| `rescan` | with `fullscan`, also fetch again the profiles older than 12h (the page's **Rescan** button sends it once and never keeps it in the URL) |
+| `rescan` | fetch again before searching: `students` (campus list), `profiles` (with `fullscan`) or `students,profiles`; `1` means `profiles`. Only what is outdated, unless `force` (the page's **Rescan** sends both once and never keeps them in the URL) |
+| `force` | with `rescan`, fetch everything again however recent |
 | `examname` / `projectname` | name or slug contains (`\|` separates alternatives) |
 | `exam_mark`, `exam_status`, `exam_validated`, `exam_required` | narrow students by their exams (same with `project_`) |
 | `level`, `average_exam_final_mark`, `cpiscine_final_mark`, `exams_passed`, … | computed fields (need `fullscan`) |

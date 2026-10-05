@@ -21,7 +21,7 @@ if (not os.path.exists(DATA_DIR)):
 USER_CACHE_PATH = os.path.join(DATA_DIR, "cached_users.json")
 CAMPUSES_PATH = os.path.join(DATA_DIR, "campuses.json")
 DEFAULT_STUDENTS_PATH = os.path.join(DATA_DIR, "students.json")
-CACHE_EXPIRATION_HOURS = 12
+CACHE_EXPIRATION_HOURS = 6
 
 CPISCINE_FINAL_EXAM_NAME = "C Piscine Final Exam"
 
@@ -42,8 +42,9 @@ DERIVED_FIELD_NAMES = {f["name"] for f in DERIVED_FIELDS}
 CONDITION_HELP = "Accepts >=, <=, >, <, ==, != prefixes (e.g. >=80); without a prefix it means 'contains'."
 
 CUSTOM_FILTERS = [
-	{"name": "fullscan", "type": "boolean", "description": "Load every exam and project of each student. Profiles never fetched are fetched from the 42 API; cached ones are kept, even when older than 12h."},
-	{"name": "rescan", "type": "boolean", "description": "With fullscan: also fetch again the profiles cached more than 12h ago."},
+	{"name": "fullscan", "type": "boolean", "description": f"Load every exam and project of each student. Profiles never fetched are fetched from the 42 API; cached ones are kept, even when older than {CACHE_EXPIRATION_HOURS}h."},
+	{"name": "rescan", "type": "string", "description": f"Fetch again before searching: 'students' (the campus student list), 'profiles' (the matching profiles, with fullscan) or 'students,profiles'; '1' means 'profiles'. Only what is older than {CACHE_EXPIRATION_HOURS}h is fetched, unless 'force' is set."},
+	{"name": "force", "type": "boolean", "description": "With rescan: fetch everything again, however recent."},
 	{"name": "campus_id", "type": "string", "description": "Campus whose students file to use."},
 	{"name": "examname", "type": "string", "description": "Exam name (or slug) contains; separate alternatives with '|'."},
 	{"name": "exam_mark", "type": "string", "description": f"Final mark of a matching exam. {CONDITION_HELP}"},
@@ -282,8 +283,8 @@ def cached_user_timestamps():
 
 def save_user_cache(cache):
 	try:
-		with open(USER_CACHE_PATH, 'w') as f:
-			json.dump(cache, f)
+		# atomic: searches read the cache while background jobs write it
+		write_json_atomic(USER_CACHE_PATH, cache)
 	except Exception as e:
 		logging.exception(f"Failed to save user cache: {e}")
 
@@ -295,11 +296,19 @@ def is_cache_expired(timestamp_str):
 	except:
 		return True
 
-def needs_fetch(timestamp_str, refresh=False):
-	"""Cached profiles are never dropped: fetch the missing ones, and the outdated ones only on `refresh`."""
-	if timestamp_str is None:
+# Which cached profiles get fetched again (cached profiles are never dropped):
+#   missing  - only the profiles never fetched
+#   outdated - also the ones older than CACHE_EXPIRATION_HOURS
+#   all      - every profile, however recent (forced rescan)
+FETCH_MODES = ("missing", "outdated", "all")
+
+def needs_fetch(timestamp_str, mode="missing"):
+	if timestamp_str is None or mode == "all":
 		return True
-	return refresh and is_cache_expired(timestamp_str)
+	return mode == "outdated" and is_cache_expired(timestamp_str)
+
+def fetch_mode(force):
+	return "all" if force else "outdated"
 
 def cache_counts(ids, timestamps):
 	"""(cached, outdated) among `ids`: cached profiles of any age, and those older than CACHE_EXPIRATION_HOURS."""
@@ -333,14 +342,15 @@ def fetch_profile(user, idx=-1):
 	fetched_user['lastSave'] = str(time.time())
 	return fetched_user
 
-# Progress of the full scan currently running (polled by the page while it waits)
-SCAN_PROGRESS = {"active": False, "done": 0, "total": 0, "startedAt": None}
+# Progress of the search currently fetching from the 42 API (polled by the page while it waits).
+# `phase` is 'students' while the student list is fetched again, then 'profiles'.
+SCAN_PROGRESS = {"active": False, "phase": None, "done": 0, "total": 0, "failed": 0, "startedAt": None}
 
-def invalidateCache(filteredList: "list"=[], refresh=False):
-	"""Full profiles of `filteredList`: cached ones as they are, missing ones fetched (and outdated ones on `refresh`)."""
+def invalidateCache(filteredList: "list"=[], mode="missing"):
+	"""Full profiles of `filteredList`: cached ones as they are, the ones `mode` selects fetched again."""
 	cache = load_user_cache()
-	stale = {str(u['id']) for u in filteredList if needs_fetch((cache.get(str(u['id'])) or {}).get('lastSave'), refresh)}
-	SCAN_PROGRESS.update(active=bool(stale), done=0, total=len(stale), startedAt=time.time())
+	stale = {str(u['id']) for u in filteredList if needs_fetch((cache.get(str(u['id'])) or {}).get('lastSave'), mode)}
+	SCAN_PROGRESS.update(active=bool(stale), phase="profiles", done=0, total=len(stale), failed=0, startedAt=time.time())
 	pending = {}
 
 	result = []
@@ -352,6 +362,7 @@ def invalidateCache(filteredList: "list"=[], refresh=False):
 				fetched_user = fetch_profile(user, idx)
 				SCAN_PROGRESS["done"] += 1
 				if fetched_user is None:
+					SCAN_PROGRESS["failed"] += 1
 					# keep the old profile if there is one, never overwrite it with a failure
 					old = cache.get(user_id)
 					result.append(dict(old) if old else {**user, 'failedFetchExams': True})
@@ -603,9 +614,41 @@ def client_payload(user):
 #-------------------------------------------------------------------------------
 # SEARCH
 
+def rescan_targets(args):
+	"""{'students', 'profiles'} requested with `rescan` ('1'/'true' alone means the profiles)."""
+	raw = str(args.get("rescan") or "").lower()
+	if not raw or not is_truthy(raw):
+		return set()
+	targets = {t.strip() for t in raw.split(",")} & {"students", "profiles"}
+	return targets or {"profiles"}
+
+def rescan_student_list(campus_id, force):
+	"""Fetches the campus student list again for a search, reporting progress like a full scan."""
+	SCAN_PROGRESS.update(active=True, phase="students", done=0, total=0, failed=0, startedAt=time.time())
+	def progress(done, total):
+		SCAN_PROGRESS.update(done=done, total=total or done)
+	try:
+		return fetch_campus_students(campus_id, progress, force=force)
+	finally:
+		SCAN_PROGRESS["active"] = False
+
 def search(args):
 	campus_id = parse_campus_id(args.get('campus_id'))
 	path, resolved_campus = resolve_students_file(campus_id)
+	rescan = rescan_targets(args)
+	force = "force" in args and is_truthy(args.get("force") or "true")
+	rescanned = {}
+	if "students" in rescan:
+		target = resolved_campus if resolved_campus is not None else campus_id
+		if target is None:
+			rescanned["studentsError"] = "The default students.json has no campus to fetch again"
+		else:
+			try:
+				rescanned["students"] = rescan_student_list(target, force)
+			except Exception as e:
+				logging.exception(e)
+				rescanned["studentsError"] = str(e)
+			path, resolved_campus = resolve_students_file(campus_id)
 	meta = {
 		"campusId": resolved_campus,
 		"requestedCampusId": campus_id,
@@ -626,6 +669,8 @@ def search(args):
 		"outdatedCount": 0,
 		"cacheHours": CACHE_EXPIRATION_HOURS,
 		"jobsActive": bool(JOBS["current"] or JOBS["queue"]),
+		"studentsFetchedAt": os.path.getmtime(path) if path else None,
+		"rescanned": rescanned or None,
 		"error": None,
 	}
 	if not path:
@@ -654,7 +699,10 @@ def search(args):
 
 	# 2. Fullscan: fetch every remaining student (cached)
 	if meta["fullscan"]:
-		filtered = invalidateCache(filteredList=filtered, refresh=is_truthy(args.get("rescan") or ""))
+		mode = fetch_mode(force) if "profiles" in rescan else "missing"
+		filtered = invalidateCache(filteredList=filtered, mode=mode)
+		if "profiles" in rescan:
+			rescanned["profiles"] = {"fetched": SCAN_PROGRESS["total"] - SCAN_PROGRESS["failed"], "failed": SCAN_PROGRESS["failed"], "mode": mode}
 
 	for user in filtered:
 		enrich(user, exam_criteria, project_criteria)
@@ -686,6 +734,7 @@ def search(args):
 
 	timestamps = cached_user_timestamps()
 	meta["cachedCount"], meta["outdatedCount"] = cache_counts((u.get('id') for u in filtered), timestamps)
+	meta["rescanned"] = rescanned or None
 	meta["unknownKeys"] = sorted(pending.keys())
 	meta["count"] = len(filtered)
 	meta["fields"] = students_keys(filtered) if meta["fullscan"] else students_keys(students)
@@ -726,7 +775,7 @@ def campus_file_info(campus_id):
 		_count_cache[path] = cached
 	ids = cached[1]
 	detailed, outdated = cache_counts(ids, cached_user_timestamps())
-	return {"count": len(ids), "fetchedAt": mtime, "detailed": detailed, "outdated": outdated}
+	return {"count": len(ids), "fetchedAt": mtime, "outdatedList": is_cache_expired(mtime), "detailed": detailed, "outdated": outdated}
 
 def campuses_overview():
 	catalog, catalog_fetched_at = load_campus_catalog()
@@ -796,8 +845,15 @@ def merge_students(new, old):
 	fetched_ids = {u.get("id") for u in new}
 	return new + [u for u in old if u.get("id") not in fetched_ids]
 
-def fetch_campus_students(campus_id, progress):
-	users = api_paginated(f"/campus/{campus_id}/users", progress)
+def student_list_outdated(campus_id):
+	path = campus_students_path(campus_id)
+	return not os.path.exists(path) or is_cache_expired(os.path.getmtime(path))
+
+def fetch_campus_students(campus_id, progress, force=True):
+	"""Fetches the student list of a campus and merges it into its file.
+
+	Without `force`, a list fetched less than CACHE_EXPIRATION_HOURS ago is kept as it is.
+	Returns {count, kept, skipped}: students fetched, older ones kept, and whether nothing was fetched."""
 	path = campus_students_path(campus_id)
 	old = []
 	if os.path.exists(path):
@@ -805,24 +861,24 @@ def fetch_campus_students(campus_id, progress):
 			old = load_students_file(path)[0]
 		except Exception as e:
 			logging.exception(e)
+	if not force and old and not student_list_outdated(campus_id):
+		return {"count": len(old), "kept": 0, "skipped": True}
+	users = api_paginated(f"/campus/{campus_id}/users", progress)
 	merged = merge_students(users, old)
 	write_json_atomic(path, merged, indent=2)
-	return len(users), len(merged) - len(users)
+	return {"count": len(users), "kept": len(merged) - len(users), "skipped": False}
 
 def fetch_campus_details(job, progress):
-	"""Fetches the full profile of every student of a campus not cached yet (same cache as fullscan).
+	"""Fetches the full profiles of a campus's students (same cache as fullscan).
 
-	With `force`, the student list is fetched again first, and outdated profiles are fetched again too."""
+	The missing and outdated profiles are fetched; with `force`, every profile is fetched again."""
 	path = campus_students_path(job["campusId"])
-	if job.get("force"):
-		job["phase"] = "students"
-		job["count"], job["kept"] = fetch_campus_students(job["campusId"], progress)
-		job["phase"] = "profiles"
 	if not os.path.exists(path):
 		raise RuntimeError("Fetch the students of this campus first")
 	students, _ = load_students_file(path)
 	timestamps = cached_user_timestamps()
-	todo = [u for u in students if needs_fetch(timestamps.get(str(u.get("id"))), job.get("force"))]
+	mode = fetch_mode(job.get("force"))
+	todo = [u for u in students if needs_fetch(timestamps.get(str(u.get("id"))), mode)]
 	job["skipped"] = len(students) - len(todo)
 	job["failed"] = 0
 	progress(0, len(todo))
@@ -851,7 +907,7 @@ def run_job(job):
 			job["done"] = done
 			job["total"] = total
 	if job["type"] == "campus":
-		job["count"], job["kept"] = fetch_campus_students(job["campusId"], progress)
+		job.update(fetch_campus_students(job["campusId"], progress, force=job.get("force", True)))
 	elif job["type"] == "catalog":
 		campuses = api_paginated("/campus", progress)
 		slim = [{k: c.get(k) for k in CAMPUS_FIELDS} for c in campuses]
@@ -916,16 +972,42 @@ def JobsAPI():
 
 @app.route("/api/campuses/fetch", methods=["POST"])
 def FetchCampusesAPI():
+	"""Queues fetches for campuses: `what` is 'students', 'details' or 'both'.
+
+	Without `force`, only what is missing or older than CACHE_EXPIRATION_HOURS is fetched;
+	with it, the student list and every profile are fetched again. Details of a campus
+	without a student list fetch the list first."""
+	body = request.get_json(silent=True) or {}
 	names = {c["id"]: c["name"] for c in campuses_overview()["campuses"]}
-	ids = [parse_campus_id(i) for i in (request.get_json(silent=True) or {}).get("ids", [])]
+	ids = [parse_campus_id(i) for i in body.get("ids", [])]
 	ids = [i for i in ids if i is not None]
 	if not ids:
 		return jsonify({"error": "No campus selected"}), 400
-	what = (request.get_json(silent=True) or {}).get("what")
-	job_type = "details" if what in ("details", "rescan") else "campus"
-	extra = {"force": True} if what == "rescan" else {}
-	enqueue_jobs([{"type": job_type, "campusId": i, "name": names.get(i, f"Campus {i}"), **extra} for i in ids])
+	what = body.get("what") or "students"
+	if what == "rescan":
+		what = "both"
+	if what not in ("students", "details", "both"):
+		return jsonify({"error": f"Unknown fetch '{what}'"}), 400
+	force = bool(body.get("force"))
+	jobs = []
+	for i in ids:
+		base = {"campusId": i, "name": names.get(i, f"Campus {i}"), "force": force}
+		has_list = os.path.exists(campus_students_path(i))
+		if what in ("students", "both") or not has_list:
+			jobs.append({**base, "type": "campus"})
+		if what in ("details", "both"):
+			jobs.append({**base, "type": "details"})
+	enqueue_jobs(jobs)
 	return jsonify(jobs_snapshot())
+
+@app.route("/api/students/<int:user_id>/refresh", methods=["POST"])
+def RefreshStudentAPI(user_id):
+	"""Fetches one student's profile again, whatever its age."""
+	fetched = fetch_profile({"id": user_id, "login": str(user_id)})
+	if fetched is None:
+		return jsonify({"error": "The 42 API didn't return this profile"}), 502
+	merge_into_user_cache({str(user_id): fetched})
+	return jsonify({"lastSave": fetched["lastSave"]})
 
 @app.route("/api/jobs/cancel", methods=["POST"])
 def CancelJobAPI():
