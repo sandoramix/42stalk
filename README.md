@@ -33,8 +33,19 @@ Fetches run in the background with live progress, and you can keep using the app
 
 The students list from the 42 API does not include exams, projects or levels. Enabling **Full scan**
 fetches each matching student's profile (one API request per student, ~2 requests/second).
-Profiles are cached for 12h in `data/cached_users.json`, so later scans are instant.
 Field filters are applied *before* fetching: narrow the list down first (e.g. `pool_year`).
+
+### Cache
+
+Nothing fetched is ever thrown away:
+
+- **Profiles** are kept in `data/cached_users.json`. A full scan only fetches the profiles that were
+  never fetched; the others are used as they are, however old. **Rescan** (or `rescan`) also fetches
+  again the profiles older than 12h. If the 42 API fails for a student, their previous profile is kept.
+- **Student lists** (`data/campus_<id>_students.json`) are merged when fetched again: students are
+  updated and added, and the ones the 42 API no longer returns stay in the file.
+- In the campus manager, **Details** fetches the missing profiles of a campus, and **Rescan** fetches
+  its student list again, then the missing and outdated profiles.
 
 ## Using the interface
 
@@ -56,7 +67,7 @@ Filters live in the URL, so any view can be shared or bookmarked.
 | --- | --- |
 | `<any field>` | e.g. `pool_year=2025`, `kind===student`, `wallet=>=100`, `location=!=` (online) |
 | `fullscan` | fetch exams/projects for each student |
-| `rescan` | with `fullscan`, fetch every profile again ignoring the cache (API only — the page's **Rescan** button sends it once and never keeps it in the URL) |
+| `rescan` | with `fullscan`, also fetch again the profiles older than 12h (the page's **Rescan** button sends it once and never keeps it in the URL) |
 | `examname` / `projectname` | name or slug contains (`\|` separates alternatives) |
 | `exam_mark`, `exam_status`, `exam_validated`, `exam_required` | narrow students by their exams (same with `project_`) |
 | `level`, `average_exam_final_mark`, `cpiscine_final_mark`, `exams_passed`, … | computed fields (need `fullscan`) |

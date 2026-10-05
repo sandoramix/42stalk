@@ -303,7 +303,7 @@
 		clearInterval(loadingTimer);
 		const showLoading = setTimeout(() => {
 			$('#loading').hidden = false;
-			$('#loading-title').textContent = rescan ? 'Rescanning every profile…' : fullscan ? 'Running full scan…' : 'Loading students…';
+			$('#loading-title').textContent = rescan ? 'Updating outdated profiles…' : fullscan ? 'Running full scan…' : 'Loading students…';
 			const bar = $('#loading-progress');
 			bar.hidden = true;
 			const updateSub = async () => {
@@ -789,7 +789,8 @@
 
 	function rescanButton() {
 		if (!S.meta?.fullscan || !S.meta.count) return '';
-		return `<button class="btn btn-sm" data-act="rescan" title="Fetch every profile again from the 42 API, ignoring the cache"><i class="fa fa-refresh"></i>Rescan</button>`;
+		const n = S.meta.outdatedCount || 0;
+		return `<button class="btn btn-sm" data-act="rescan" ${n ? '' : 'disabled'} title="${n ? `Fetch again the ${plural(n, 'profile')} cached more than ${S.meta.cacheHours}h ago (${apiEstimate(n)})` : `Every profile was fetched in the last ${S.meta.cacheHours}h`}"><i class="fa fa-refresh"></i>Rescan${n ? ` · ${fmtNum(n)}` : ''}</button>`;
 	}
 
 	function renderStudents() {
@@ -1517,8 +1518,8 @@
 						<span class="switch"><input type="checkbox" data-bind="p-fullscan" ${fullscan ? 'checked' : ''}><span class="track"></span></span>
 						<span>
 							<span class="title">Full scan</span>
-							<span class="desc" style="display:block">Loads exams, projects and levels by fetching every matching student from the 42 API (cached ${m.cacheHours}h).
-							${m.fullscan ? '' : toFetch === 0 ? `All ${fmtNum(m.count)} current students are cached.` : `${fmtNum(m.cachedCount || 0)}/${fmtNum(m.count)} current students cached · ~${fmtNum(toFetch)} requests (${apiEstimate(toFetch)}).`}
+							<span class="desc" style="display:block">Loads exams, projects and levels by fetching every matching student from the 42 API. Fetched profiles are kept; <b>Rescan</b> updates the ones older than ${m.cacheHours}h.
+							${m.fullscan ? '' : toFetch === 0 ? `All ${fmtNum(m.count)} current students are cached${m.outdatedCount ? ` (${fmtNum(m.outdatedCount)} older than ${m.cacheHours}h)` : ''}.` : `${fmtNum(m.cachedCount || 0)}/${fmtNum(m.count)} current students cached · ~${fmtNum(toFetch)} requests (${apiEstimate(toFetch)}).`}
 							Field filters below are applied <i>before</i> fetching, so narrow down first.</span>
 						</span>
 					</label>
@@ -1745,8 +1746,9 @@
 
 	function onJobFinished(job) {
 		if (job.status === 'cancelled') {
-			toast(`Cancelled: ${esc(job.name)}${job.type === 'details' && job.done ? ` (${plural(job.done, 'profile')} kept)` : ''}`);
-			if (job.type === 'details' && job.done) { S.loadedKey = null; load({ keepStaged: clonePairs(S.staged) }); }
+			const kept = job.type === 'details' && job.phase !== 'students' && job.done;
+			toast(`Cancelled: ${esc(job.name)}${kept ? ` (${plural(job.done, 'profile')} kept)` : ''}`);
+			if (kept) { S.loadedKey = null; load({ keepStaged: clonePairs(S.staged) }); }
 			return;
 		}
 		if (job.status === 'error') {
@@ -1758,9 +1760,13 @@
 			return;
 		}
 		if (job.type === 'details') {
-			toast(`Details ready for <b>${esc(job.name)}</b>: ${plural(job.count, 'profile')} fetched${job.skipped ? `, ${fmtNum(job.skipped)} already cached` : ''}`, { label: 'Open', run: () => openCampus(job.campusId, true) }, 6000);
+			const parts = [`${plural(job.fetched, 'profile')} fetched`];
+			if (job.force) parts.unshift(plural(job.count, 'student'));
+			if (job.skipped) parts.push(`${fmtNum(job.skipped)} ${job.force ? 'up to date' : 'already cached'}`);
+			if (job.failed) parts.push(`${fmtNum(job.failed)} failed`);
+			toast(`${job.force ? 'Rescanned' : 'Details ready for'} <b>${esc(job.name)}</b>: ${parts.join(', ')}`, { label: 'Open', run: () => openCampus(job.campusId, true) }, 6000);
 		} else {
-			toast(`Fetched <b>${esc(job.name)}</b>: ${plural(job.count, 'student')}`, { label: 'Open', run: () => openCampus(job.campusId) }, 6000);
+			toast(`Fetched <b>${esc(job.name)}</b>: ${plural(job.count, 'student')}${job.kept ? ` (${fmtNum(job.kept)} older ones kept)` : ''}`, { label: 'Open', run: () => openCampus(job.campusId) }, 6000);
 		}
 		// refresh the campus selector, and the data if this campus is on screen
 		S.loadedKey = null;
@@ -1829,10 +1835,11 @@
 		const pct = job.total ? Math.min(100, Math.round(job.done / job.total * 100)) : null;
 		let right = job.startedAt ? fmtDuration(Date.now() - job.startedAt * 1000) : '';
 		// profiles are fetched one by one at ~2 requests/second
-		if (job.type === 'details' && job.total) right = `${apiEstimate(job.total - job.done)} left`;
-		const label = job.status === 'queued' ? 'Queued'
+		const profiles = job.type === 'details' && job.phase !== 'students';
+		if (profiles && job.total) right = `${apiEstimate(job.total - job.done)} left`;
+		const label = job.status === 'queued' ? (job.force ? 'Rescan queued' : 'Queued')
 			: job.cancel ? 'Cancelling…'
-			: `${job.type === 'details' ? 'Profiles' : 'Students'} ${fmtNum(job.done)}${job.total !== null && job.total !== undefined ? ' / ' + fmtNum(job.total) : ''}`;
+			: `${profiles ? 'Profiles' : 'Students'} ${fmtNum(job.done)}${job.total !== null && job.total !== undefined ? ' / ' + fmtNum(job.total) : ''}`;
 		return `
 			<div class="job-progress">
 				<div class="row">
@@ -1854,6 +1861,7 @@
 		return `
 			<div class="job-progress">
 				<div class="row"><span>${fmtNum(c.local.detailed)} / ${fmtNum(c.local.count)} profiles</span><span class="muted">${left ? apiEstimate(left) : 'complete'}</span></div>
+				${c.local.outdated ? `<div class="field-hint">${fmtNum(c.local.outdated)} older than ${CM.data?.cacheHours ?? 12}h</div>` : ''}
 				<span class="progress ${pct === 100 ? 'complete' : ''}"><i style="width:${pct}%"></i></span>
 			</div>`;
 	}
@@ -1946,6 +1954,10 @@
 													title="${!c.local ? 'Fetch the students first' : c.local.detailed >= c.local.count ? 'Every profile is cached' : `Fetch ${fmtNum(c.local.count - c.local.detailed)} missing profiles (${apiEstimate(c.local.count - c.local.detailed)})`}">
 													<i class="fa fa-id-card-o"></i>Details
 												</button>
+												<button class="btn btn-sm" data-act="cm-rescan" data-id="${c.id}" ${detailsJob || studentsJob || !c.local ? 'disabled' : ''}
+													title="${!c.local ? 'Fetch the students first' : `Fetch the student list again, then the missing profiles and those older than ${CM.data?.cacheHours ?? 12}h (${fmtNum(c.local.count - c.local.detailed + (c.local.outdated || 0))}+ requests). Nothing already fetched is removed.`}">
+													<i class="fa fa-refresh"></i>Rescan
+												</button>
 											</td>
 										</tr>`;
 								}).join('')}
@@ -1954,10 +1966,11 @@
 						${list.length ? '' : '<p class="muted" style="padding:20px;text-align:center">No campus matches.</p>'}`}
 				</div>
 				<div class="sheet-foot">
-					<span class="field-hint">${queue.length ? `${plural(queue.length, 'job')} running or queued — you can close this window, fetching continues in the background.` : '<b>Students</b>: one request per 100 students. <b>Details</b>: one request per student (~2/s), already cached profiles are skipped.'}</span>
+					<span class="field-hint">${queue.length ? `${plural(queue.length, 'job')} running or queued — you can close this window, fetching continues in the background.` : '<b>Students</b>: one request per 100 students. <b>Details</b>: one request per student (~2/s), already cached profiles are skipped. <b>Rescan</b>: students again, then missing and outdated profiles.'}</span>
 					<span class="grow"></span>
 					${CM.sel.size ? `<button class="btn btn-ghost" data-act="cm-clear">Clear (${CM.sel.size})</button>` : ''}
 					<button class="btn" data-act="cm-fetch-selected" ${CM.sel.size ? '' : 'disabled'}><i class="fa fa-users"></i>Fetch students</button>
+					<button class="btn" data-act="cm-rescan-selected" ${CM.sel.size ? '' : 'disabled'} title="Fetch the student list again, then the missing and outdated profiles"><i class="fa fa-refresh"></i>Rescan</button>
 					<button class="btn btn-primary" data-act="cm-details-selected" ${CM.sel.size ? '' : 'disabled'} title="Students are fetched first where missing"><i class="fa fa-id-card-o"></i>Fetch details</button>
 				</div>
 			</div>`;
@@ -2183,7 +2196,7 @@
 			case 'dismiss': S.noticeDismissed[d.notice] = true; store.set('dismissed', S.noticeDismissed); renderNotices(); break;
 			case 'retry': S.loadedKey = null; load(); break;
 			case 'rescan':
-				if (confirm(`Fetch all ${plural(S.meta.count, 'profile')} again from the 42 API, ignoring the cache? This takes ${apiEstimate(S.meta.count)}.`)) load({ rescan: true, keepStaged: clonePairs(S.staged) });
+				if (confirm(`Fetch again the ${plural(S.meta.outdatedCount, 'profile')} cached more than ${S.meta.cacheHours}h ago? This takes ${apiEstimate(S.meta.outdatedCount)}.`)) load({ rescan: true, keepStaged: clonePairs(S.staged) });
 				break;
 			case 'open-filters': openFilterPanel(); break;
 			case 'close-sheets': closeSheets(); break;
@@ -2241,6 +2254,8 @@
 			case 'cm-fetch': fetchCampuses([Number(d.id)]); break;
 			case 'cm-fetch-selected': fetchCampuses([...CM.sel]); break;
 			case 'cm-details': fetchCampuses([Number(d.id)], 'details'); break;
+			case 'cm-rescan': fetchCampuses([Number(d.id)], 'rescan'); break;
+			case 'cm-rescan-selected': fetchCampuses([...CM.sel], 'rescan'); break;
 			case 'cm-details-selected': {
 				// campuses without a student list get it first: the queue runs in order
 				const missing = [...CM.sel].filter((id) => !CM.data?.campuses.find((c) => c.id === id)?.local);
