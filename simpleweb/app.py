@@ -43,6 +43,7 @@ CONDITION_HELP = "Accepts >=, <=, >, <, ==, != prefixes (e.g. >=80); without a p
 
 CUSTOM_FILTERS = [
 	{"name": "fullscan", "type": "boolean", "description": "Fetch every exam and project of each student from the 42 API (cached for 12h)."},
+	{"name": "rescan", "type": "boolean", "description": "With fullscan: fetch every profile again, ignoring the cache."},
 	{"name": "campus_id", "type": "string", "description": "Campus whose students file to use."},
 	{"name": "examname", "type": "string", "description": "Exam name (or slug) contains; separate alternatives with '|'."},
 	{"name": "exam_mark", "type": "string", "description": f"Final mark of a matching exam. {CONDITION_HELP}"},
@@ -315,9 +316,9 @@ def fetch_profile(user, idx=-1):
 # Progress of the full scan currently running (polled by the page while it waits)
 SCAN_PROGRESS = {"active": False, "done": 0, "total": 0, "startedAt": None}
 
-def invalidateCache(filteredList: "list"=[]):
+def invalidateCache(filteredList: "list"=[], force=False):
 	cache = load_user_cache()
-	stale = {str(u['id']) for u in filteredList if is_cache_expired((cache.get(str(u['id'])) or {}).get('lastSave'))}
+	stale = {str(u['id']) for u in filteredList if force or is_cache_expired((cache.get(str(u['id'])) or {}).get('lastSave'))}
 	SCAN_PROGRESS.update(active=bool(stale), done=0, total=len(stale), startedAt=time.time())
 	pending = {}
 
@@ -626,7 +627,7 @@ def search(args):
 
 	# 2. Fullscan: fetch every remaining student (cached)
 	if meta["fullscan"]:
-		filtered = invalidateCache(filteredList=filtered)
+		filtered = invalidateCache(filteredList=filtered, force=is_truthy(args.get("rescan") or ""))
 
 	for user in filtered:
 		enrich(user, exam_criteria, project_criteria)

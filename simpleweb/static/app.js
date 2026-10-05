@@ -246,6 +246,8 @@
 		const applied = [];
 		for (const [k, v] of params.entries()) {
 			if (CLIENT_PARAMS.includes(k)) continue;
+			// one-shot: never kept in the URL, so a reload doesn't rescan again
+			if (k === 'rescan') continue;
 			if (v === '' && !FLAG_PARAMS.has(k)) continue;
 			setParam(applied, k, v);
 		}
@@ -285,9 +287,9 @@
 	let loadController = null;
 	let loadingTimer = null;
 
-	async function load({ keepStaged = null } = {}) {
+	async function load({ keepStaged = null, rescan = false } = {}) {
 		const key = paramsKey(S.applied);
-		if (key === S.loadedKey && !S.error) {
+		if (key === S.loadedKey && !S.error && !rescan) {
 			S.staged = keepStaged || clonePairs(S.applied);
 			renderAll();
 			return;
@@ -301,7 +303,7 @@
 		clearInterval(loadingTimer);
 		const showLoading = setTimeout(() => {
 			$('#loading').hidden = false;
-			$('#loading-title').textContent = fullscan ? 'Running full scan…' : 'Loading students…';
+			$('#loading-title').textContent = rescan ? 'Rescanning every profile…' : fullscan ? 'Running full scan…' : 'Loading students…';
 			const bar = $('#loading-progress');
 			bar.hidden = true;
 			const updateSub = async () => {
@@ -322,7 +324,9 @@
 		}, 180);
 
 		try {
-			const qs = new URLSearchParams(S.applied).toString();
+			const params = new URLSearchParams(S.applied);
+			if (rescan) params.set('rescan', '1');
+			const qs = params.toString();
 			const res = await fetch('/api/search' + (qs ? '?' + qs : ''), { signal: controller.signal });
 			if (!res.ok) throw new Error(`Server responded ${res.status}`);
 			const data = await res.json();
@@ -783,6 +787,11 @@
 			</div>`;
 	}
 
+	function rescanButton() {
+		if (!S.meta?.fullscan || !S.meta.count) return '';
+		return `<button class="btn btn-sm" data-act="rescan" title="Fetch every profile again from the 42 API, ignoring the cache"><i class="fa fa-refresh"></i>Rescan</button>`;
+	}
+
 	function renderStudents() {
 		const m = S.meta;
 		const list = visibleStudents();
@@ -803,6 +812,7 @@
 					</button>
 				</label>
 				${m.fullscan ? stageSwitch() : ''}
+				${rescanButton()}
 				<div class="segmented" role="group" aria-label="Display">
 					<button class="${S.display === 'grid' ? 'active' : ''}" data-act="display" data-display="grid" title="Cards (G)"><i class="fa fa-th-large"></i>Cards</button>
 					<button class="${S.display === 'table' ? 'active' : ''}" data-act="display" data-display="table" title="Detailed list (G)"><i class="fa fa-list"></i>List</button>
@@ -1094,7 +1104,7 @@
 		const title = ex.sel.size === 1 ? esc([...ex.sel][0]) : ex.sel.size ? `${ex.sel.size} ${K.labels.toLowerCase()} selected` : `All ${K.labels.toLowerCase()}`;
 		const main = `
 			<section>
-				<div class="toolbar"><div class="toolbar-title"><h1>${title}</h1><span class="sub">${plural(base.length, 'attempt')} across ${plural(new Set(base.map((r) => r.u.id)).size, 'student')}</span></div></div>
+				<div class="toolbar"><div class="toolbar-title"><h1>${title}</h1><span class="sub">${plural(base.length, 'attempt')} across ${plural(new Set(base.map((r) => r.u.id)).size, 'student')}</span></div>${rescanButton()}</div>
 				${controls}
 				${kpis}
 				${ex.mode === 'matrix' ? renderMatrix(kind, rows, facets) : renderAttempts(kind, rows)}
@@ -2172,6 +2182,9 @@
 			case 'remove-unknown': applyNow((p) => { for (const k of S.meta.unknownKeys) setParam(p, k, null); }); break;
 			case 'dismiss': S.noticeDismissed[d.notice] = true; store.set('dismissed', S.noticeDismissed); renderNotices(); break;
 			case 'retry': S.loadedKey = null; load(); break;
+			case 'rescan':
+				if (confirm(`Fetch all ${plural(S.meta.count, 'profile')} again from the 42 API, ignoring the cache? This takes ${apiEstimate(S.meta.count)}.`)) load({ rescan: true, keepStaged: clonePairs(S.staged) });
+				break;
 			case 'open-filters': openFilterPanel(); break;
 			case 'close-sheets': closeSheets(); break;
 			case 'drawer-step': drawerStep(Number(d.delta)); break;

@@ -56,6 +56,7 @@ Filters live in the URL, so any view can be shared or bookmarked.
 | --- | --- |
 | `<any field>` | e.g. `pool_year=2025`, `kind===student`, `wallet=>=100`, `location=!=` (online) |
 | `fullscan` | fetch exams/projects for each student |
+| `rescan` | with `fullscan`, fetch every profile again ignoring the cache (API only — the page's **Rescan** button sends it once and never keeps it in the URL) |
 | `examname` / `projectname` | name or slug contains (`\|` separates alternatives) |
 | `exam_mark`, `exam_status`, `exam_validated`, `exam_required` | narrow students by their exams (same with `project_`) |
 | `level`, `average_exam_final_mark`, `cpiscine_final_mark`, `exams_passed`, … | computed fields (need `fullscan`) |
