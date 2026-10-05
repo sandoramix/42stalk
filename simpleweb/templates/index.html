@@ -1,499 +1,89 @@
-<html lang="en">
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
 
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<script src="https://cdn.tailwindcss.com"></script>
-	<link rel="stylesheet" href="{{ url_for('static', filename='/fawesome/css/font-awesome.min.css')}}">
-	<link rel="stylesheet" href="{{ url_for('static', filename='/styles.css')}}">
-
+	<title>42stalk</title>
 	<link rel="shortcut icon" href="{{ url_for('static', filename='42.jpg') }}">
-	<title>
-		{% if title|length %}
-		{{title}}
-		{% else %}
-		Students
-		{% endif %}
-	</title>
+	<link rel="preconnect" href="https://fonts.googleapis.com">
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+	<link rel="stylesheet" href="{{ url_for('static', filename='fawesome/css/font-awesome.min.css') }}">
+	<link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+	<script>
+		try {
+			const theme = localStorage.getItem('stalk.theme');
+			if (theme) document.documentElement.dataset.theme = theme;
+		} catch (e) { }
+	</script>
 </head>
 
-<body class="flex flex-col px-2 py-5 pt-0 overflow-hidden text-center bg-neutral-900 text-neutral-100">
-	<div class="relative w-full overflow-y-auto">
-		{% if unknownKeys|length %}
-		<div class="flex flex-col pt-5">
-			<h3 class="flex font-mono text-2xl uppercase">There are some unknown query params:</h2>
-				<ul class="flex flex-col">
-					{% for key in unknownKeys %}
-					<li class="flex items-center gap-2 text-yellow-400">
-						<div class="w-2 h-2 bg-red-600 rounded-full animate-pulse"></div>
-						<div class="flex items-center font-mono font-bold">{{key}}</div>
-					</li>
-					{% endfor %}
-				</ul>
-		</div>
-		{% endif %}
+<body>
+	<header class="appbar">
+		<div class="appbar-row">
+			<a class="brand" href="{{ url_for('Homepage') }}" title="Reset everything">
+				<img src="{{ url_for('static', filename='42.jpg') }}" alt="">
+				<span>42<b>stalk</b></span>
+			</a>
 
-		<div class="sticky top-0 right-0 z-10 flex justify-end w-full px-4 py-1">
-			<button type="button" onclick="toggleFilterPanel()"
-				class="flex items-center gap-2 p-2 text-xl text-yellow-400 uppercase rounded shadow-lg bg-black/75 hover:bg-black">
-				<i class="fa fa-filter" aria-hidden="true"></i> Filters
-				{% if active_filters|length %}
-				<span class="flex items-center justify-center w-6 h-6 text-sm text-black bg-yellow-400 rounded-full">{{ active_filters|length }}</span>
-				{% endif %}
-			</button>
-		</div>
-
-		<div class="flex items-center gap-4 font-mono text-4xl uppercase">
-			<h1>RESULT:</h1>
-			<div>{{students | length}}</div>
-		</div>
-		<main class="flex flex-col gap-2 grow shrink-0">
-			{% for student in students %}
-			<div class="grid min-w-0 grid-cols-1 px-3 py-1 border border-gray-600 sm:grid-cols-7">
-				<div class="col-span-1">
-					<a href="https://profile.intra.42.fr/users/{{student.login}}" target="_blank" referrer="noreferrer">
-						{% if student.image.link %}
-						<img src="{{student.image.link}}" class="object-scale-down max-w-full h-72 " />
-						{%else%}
-						<img src="/static/placeholder-user.png" class="object-scale-down max-w-full h-72 " />
-						{%endif%}
-					</a>
-				</div>
-				<div class="flex flex-col justify-center col-span-2 gap-2 px-3 py-1">
-					<div class="flex items-center gap-3">
-						<i onclick='studinfo({{ loop.index0 }})' class="text-3xl cursor-pointer fa fa-info-circle"
-							title="get a better preview" aria-hidden="true"></i>
-						<h2 class="text-xl font-bold">{{student.login}}</h2>
-					</div>
-					<h2 class="flex gap-1"> <span class="select-none" title="displayname">Display name:</span
-							class="select-none">{{student.displayname}}</h2>
-					<h3 class="flex gap-1"> <span class="select-none" title="email">Email:</span
-							class="select-none">{{student.email}}</h3>
-					<h6 class="flex gap-1"> <span class="select-none" title="wallet">Wallet:</span
-							class="select-none">{{student.wallet}}</h6>
-					<p class="flex gap-1"><span class="select-none" title="kind">Kind:</span
-							class="select-none">{{student.kind}}</p>
-					<div>
-						<p class="flex gap-1"> <span class="select-none" title="pool_month">Month:</span
-								class="select-none">{{student.pool_month}}</p>
-						<p class="flex gap-1"> <span class="select-none" title="pool_year">Year:</span
-								class="select-none">{{student.pool_year}}</p>
-					</div>
-					{% if student.average_mark %}
-					<div>
-						Average mark: <span>{{ student.average_mark }}</span>
-					</div>
-					{% endif %}
-
-				</div>
-				<div class="flex flex-col justify-center col-span-1 gap-2 px-3 py-1 sm:col-span-4">
-					<fieldset class="flex flex-col gap-2 border border-white/40">
-						<legend class="flex items-center justify-between text-xl font-bold">
-							<span>Exams</span>
-							<button type="button" onclick="toggleSection(this)"
-								class="ml-2 text-sm text-yellow-400 hover:underline" data-expanded="true">[−]</button>
-						</legend>
-
-						<div>
-							Average final mark: <span>{{ student.average_exam_final_mark }}</span>
-						</div>
-						<div class="collapsible" style="display: block;">
-
-							{% if student.exams and student.exams|length %}
-							<div class="flex flex-col justify-center gap-2 px-3 py-1">
-								<table class="w-full table-auto">
-									<thead>
-										<tr>
-											<th class="text-left">Name</th>
-											<th class="text-left">Status</th>
-											<th class="text-left">Final mark</th>
-											<th class="text-left">Occurrence</th>
-											<th class="text-left">Validated?</th>
-										</tr>
-									</thead>
-									<tbody>
-										{% for exam in student.exams %}
-										<tr>
-											<td class="text-left">{{ exam.project.name }}</td>
-											<td class="text-left">{{ exam.status }}</td>
-											<td class="text-left">{{ exam.final_mark }}</td>
-											<td class="text-left">{{ exam.occurrence }}</td>
-											<td class="text-left">{{ exam.validated }}</td>
-										</tr>
-										{% endfor %}
-									</tbody>
-								</table>
-							</div>
-							{% else %}
-							<div class="flex flex-col justify-center gap-2 px-3 py-1">
-								<p class="text-center">No current exams</p>
-							</div>
-							{% endif %}
-						</div>
-					</fieldset>
-
-
-					<fieldset class="flex flex-col gap-2 border border-white/40">
-						<legend class="text-xl font-bold">
-							<span>Projects</span>
-							<button type="button" onclick="toggleSection(this)"
-								class="ml-2 text-sm text-yellow-400 hover:underline" data-expanded="false">[+]</button>
-						</legend>
-						<div>
-							Average final mark: <span>{{ student.average_project_final_mark }}</span>
-						</div>
-						<div class="collapsible" style="display: none;">
-
-							<div class="flex flex-col justify-center gap-2 px-3 py-1">
-								{% if student.projects and student.projects|length %}
-
-								<table class="w-full table-auto">
-									<thead>
-										<tr>
-											<th class="text-left">Name</th>
-											<th class="text-left">Status</th>
-											<th class="text-left">Final mark</th>
-											<th class="text-left">Occurrence</th>
-											<th class="text-left">Validated?</th>
-										</tr>
-									</thead>
-									<tbody>
-										{% for project in student.projects %}
-										<tr>
-											<td class="text-left">{{project.project.name}}</td>
-											<td class="text-left">{{project.status}}</td>
-											<td class="text-left">{{project.final_mark}}</td>
-											<td class="text-left">{{project.occurrence}}</td>
-											<td class="text-left">{{project.validated}}</td>
-										</tr>
-										{% endfor %}
-									</tbody>
-								</table>
-							</div>
-							{% else %}
-							<div class="flex flex-col justify-center gap-2 px-3 py-1">
-								<p class="text-center">No current projects</p>
-							</div>
-							{% endif %}
-						</div>
-					</fieldset>
-
-				</div>
+			<div class="campus-picker">
+				<div class="campus-select" id="campus-select"></div>
+				<button class="btn icon-btn" id="btn-campuses" title="Fetch &amp; update campuses (C)"><i class="fa fa-cloud-download"></i></button>
 			</div>
-			{% endfor %}
-		</main>
 
-	</div>
-
-	<div id="filter-overlay" onclick="toggleFilterPanel()"
-		class="fixed top-0 left-0 z-40 hidden w-full h-full backdrop-brightness-75"></div>
-
-	<aside id="filter-panel"
-		class="fixed top-0 right-0 z-50 flex flex-col w-full h-full max-w-md text-left translate-x-full border-l shadow-2xl transition-transform duration-300 border-white/25 bg-neutral-950">
-		<div class="flex items-center justify-between px-4 py-3 border-b border-white/25">
-			<h3 class="font-mono text-xl font-bold text-yellow-400 uppercase">Filters</h3>
-			<button type="button" onclick="toggleFilterPanel()" aria-label="Close filters"
-				class="text-2xl leading-none text-white hover:text-yellow-400">&times;</button>
-		</div>
-
-		<form id="filter-form" method="get" action="{{ url_for('Homepage') }}"
-			class="flex flex-col flex-1 gap-4 px-4 py-3 overflow-y-auto font-mono text-sm">
-
-			<label class="flex items-center gap-2 p-2 border rounded cursor-pointer border-neutral-700 hover:border-yellow-400">
-				<input type="checkbox" id="filter-fullscan" name="fullscan" value="true"
-					{% if request.args.get('fullscan') is not none %}checked{% endif %}>
-				<span class="font-bold">fullscan</span>
-				<span class="text-xs text-neutral-400">— fetch all exams/projects (required for exam filters)</span>
+			<label class="search">
+				<i class="fa fa-search" aria-hidden="true"></i>
+				<input id="quick-search" type="search" placeholder="Search login, name or email…" autocomplete="off" spellcheck="false">
+				<kbd>/</kbd>
 			</label>
 
-			<div class="flex flex-col gap-1">
-				<label for="filter-examname" class="font-bold">examname</label>
-				<input type="text" id="filter-examname" name="examname" placeholder="e.g. piscine"
-					value="{{ request.args.get('examname', '') }}"
-					class="px-2 py-1 text-white border rounded bg-neutral-900 border-neutral-700 focus:outline-none focus:border-yellow-400">
-			</div>
-
-			<div class="flex flex-col gap-1">
-				<label for="filter-projectname" class="font-bold">projectname</label>
-				<input type="text" id="filter-projectname" name="projectname" placeholder="e.g. libft"
-					value="{{ request.args.get('projectname', '') }}"
-					class="px-2 py-1 text-white border rounded bg-neutral-900 border-neutral-700 focus:outline-none focus:border-yellow-400">
-			</div>
-
-			<div class="flex flex-col gap-1 p-2 border rounded border-yellow-400/40">
-				<label for="filter-cpiscine" class="font-bold text-yellow-400">cpiscine_final_mark</label>
-				<span class="text-xs text-neutral-400">Final mark for "C Piscine Final Exam". Requires fullscan. Accepts &gt;=, &lt;=, &gt;, &lt;, ==, != prefixes (e.g. &gt;=80).</span>
-				<input type="text" id="filter-cpiscine" name="cpiscine_final_mark" placeholder=">=80"
-					value="{{ request.args.get('cpiscine_final_mark', '') }}"
-					class="px-2 py-1 text-white border rounded bg-neutral-900 border-neutral-700 focus:outline-none focus:border-yellow-400">
-			</div>
-
-			<div class="flex gap-2">
-				<div class="flex flex-col flex-1 gap-1">
-					<label for="filter-sortby" class="font-bold">sortby</label>
-					<select id="filter-sortby" name="sortby"
-						class="px-2 py-1 text-white border rounded bg-neutral-900 border-neutral-700 focus:outline-none focus:border-yellow-400">
-						<option value="">—</option>
-						{% for field in fields %}
-						<option value="{{ field.name }}" {% if request.args.get('sortby')==field.name %}selected{% endif %}>{{ field.name }}</option>
-						{% endfor %}
-					</select>
-				</div>
-				<div class="flex flex-col gap-1">
-					<label for="filter-order" class="font-bold">order</label>
-					<select id="filter-order" name="order"
-						class="px-2 py-1 text-white border rounded bg-neutral-900 border-neutral-700 focus:outline-none focus:border-yellow-400">
-						<option value="asc" {% if request.args.get('order') !='desc' %}selected{% endif %}>asc</option>
-						<option value="desc" {% if request.args.get('order')=='desc' %}selected{% endif %}>desc</option>
-					</select>
-				</div>
-			</div>
-
-			<div class="flex flex-col gap-1">
-				<label for="filter-campus" class="font-bold">campus_id</label>
-				<input type="text" id="filter-campus" name="campus_id" placeholder="e.g. 13"
-					value="{{ request.args.get('campus_id', '') }}"
-					class="px-2 py-1 text-white border rounded bg-neutral-900 border-neutral-700 focus:outline-none focus:border-yellow-400">
-			</div>
-
-			<fieldset class="flex flex-col gap-2 p-2 border rounded border-neutral-700">
-				<legend class="px-1 font-bold">Custom field filters</legend>
-				<div id="custom-filter-rows" class="flex flex-col gap-2"></div>
-				<button type="button" onclick="addCustomFilterRow()"
-					class="self-start px-2 py-1 text-xs text-yellow-400 border border-yellow-400 rounded hover:bg-yellow-400 hover:text-black">
-					+ Add field filter
+			<div class="appbar-actions">
+				<button class="btn btn-ghost icon-btn" id="btn-shortcuts" title="Keyboard shortcuts (?)"><i class="fa fa-keyboard-o"></i></button>
+				<button class="btn btn-ghost icon-btn" id="btn-theme" title="Toggle theme"><i class="fa fa-adjust"></i></button>
+				<button class="btn btn-primary" id="btn-filters" title="Filters (F)">
+					<i class="fa fa-sliders"></i><span>Filters</span><span class="count-badge" id="filter-count" hidden></span>
 				</button>
-			</fieldset>
-
-			<details class="text-xs text-neutral-400">
-				<summary class="cursor-pointer hover:text-yellow-400">Available fields reference</summary>
-				<div class="flex flex-col gap-2 mt-2 max-h-48 overflow-y-auto">
-					<div>
-						<div class="font-bold text-neutral-300">Custom filters</div>
-						{% for field in customFields %}
-						<div class="flex flex-wrap gap-1 py-0.5">
-							<span class="font-semibold">{{ field.name }}</span>
-							<span>: {{ field.type }}</span>
-							{% if field.description %}<span class="text-green-600">// {{ field.description }}</span>{% endif %}
-						</div>
-						{% endfor %}
-					</div>
-					<div>
-						<div class="font-bold text-neutral-300">User fields</div>
-						{% for field in fields %}
-						<div class="flex flex-wrap gap-1 py-0.5">
-							<span class="font-semibold">{{ field.name }}</span>
-							<span>: {{ field.type }}</span>
-						</div>
-						{% endfor %}
-					</div>
-				</div>
-			</details>
-
-			<div class="sticky bottom-0 flex gap-2 pt-2 pb-1 border-t bg-neutral-950 border-white/25">
-				<button type="submit"
-					class="flex-1 px-3 py-2 font-bold text-black bg-yellow-400 rounded hover:bg-yellow-300">Apply</button>
-				<a href="{{ url_for('Homepage') }}"
-					class="px-3 py-2 text-center border rounded border-neutral-700 hover:border-yellow-400">Reset</a>
 			</div>
-		</form>
-	</aside>
-	<div id="overlay" onclick="toggleModal()"
-		class="fixed top-0 left-0 z-40 hidden w-full h-full backdrop-brightness-90"></div>
-	<div id="modal"
-		class="fixed z-50 hidden w-10/12 max-w-screen-lg px-5 py-3 overflow-y-auto -translate-x-1/2 -translate-y-1/2 border-2 rounded-lg border-white/50 top-1/2 left-1/2 h-5/6 bg-neutral-950 overscroll-contain">
-		<h3 class="font-mono text-xl font-bold"> USER OVERVIEW </h3>
-		<h4 id="modal-login" class="font-sans text-base"></h4>
-		<div id="student-details" class="max-w-full space-y-3 text-justify text-ellipsis font-[Consolas]"></div>
+		</div>
+
+		<nav class="tabs" id="view-tabs" role="tablist">
+			<button role="tab" data-view="students"><i class="fa fa-users"></i>Students <span class="tab-count" data-count="students"></span></button>
+			<button role="tab" data-view="exams"><i class="fa fa-graduation-cap"></i>Exams <span class="tab-count" data-count="exams"></span></button>
+			<button role="tab" data-view="projects"><i class="fa fa-folder-open-o"></i>Projects <span class="tab-count" data-count="projects"></span></button>
+		</nav>
+	</header>
+
+	<div class="chipbar" id="chipbar" hidden></div>
+
+	<main class="scroller" id="scroller">
+		<div class="page" id="page">
+			<div id="notices"></div>
+			<div id="view"></div>
+		</div>
+	</main>
+
+	<div class="loading" id="loading" hidden>
+		<div class="loading-card">
+			<div class="spinner"></div>
+			<div>
+				<div class="loading-title" id="loading-title">Loading students…</div>
+				<div class="loading-sub" id="loading-sub"></div>
+			</div>
+		</div>
 	</div>
 
+	<div class="scrim" id="scrim" hidden></div>
+	<aside class="sheet sheet-filters" id="filter-panel" aria-label="Filters" hidden></aside>
+	<aside class="sheet sheet-student" id="student-drawer" aria-label="Student" hidden></aside>
 
-	<script id="students-json" type="application/json">
-		{{ students_json | safe }}
-	</script>
+	<div class="popover" id="popover" hidden></div>
+	<div class="toasts" id="toasts"></div>
+	<div class="modal" id="shortcuts" hidden></div>
+	<div class="modal" id="campus-manager" hidden></div>
+	<div class="lightbox" id="lightbox" role="dialog" aria-label="Photo" hidden></div>
 
-	<script>
-		const modal = document.querySelector('#modal');
-		const overlay = document.querySelector('#overlay');
-		const container = document.querySelector('#student-details');
-		const modalLogin = document.querySelector('#modal-login');
-
-		const students = JSON.parse(document.getElementById('students-json').textContent);
-
-		// JSON IDs (do not use for other purposes)
-		let jsonIdCounter = 0;
-		function getJsonId() {
-			return `json-id-${jsonIdCounter++}`;
-		}
-
-		function toggleSection(button) {
-			const container = button.closest('fieldset').querySelector('.collapsible');
-			const isExpanded = button.getAttribute('data-expanded') === 'true';
-
-			if (isExpanded) {
-				container.style.display = 'none';
-				button.textContent = '[+]';
-				button.setAttribute('data-expanded', 'false');
-			} else {
-				container.style.display = 'block';
-				button.textContent = '[−]';
-				button.setAttribute('data-expanded', 'true');
-			}
-		}
-
-		function renderField(key, value, indent = 0) {
-			const hideArrayMinLength = 10;
-			const pad = '&nbsp;'.repeat(indent * 2);
-
-			if (value === null || typeof value === 'number' || typeof value === 'boolean') {
-				return `<div>${pad}<span class="font-semibold">${key}</span>: <span>${value}</span>,</div>`;
-			} else if (typeof value === 'string') {
-				return `<div>${pad}<span class="font-semibold">${key}</span>: <span>"${value}"</span>,</div>`;
-			} else if (Array.isArray(value)) {
-				const id = getJsonId();
-				const shouldHide = value.length >= hideArrayMinLength;
-				let html = `<div>${pad}<span class="font-semibold">${key}@${value.length}</span>: <button onclick="toggleJson('${id}')" class="text-yellow-400">[${!shouldHide ? '−' : '+'}]</button></div>`;
-				html += `<div id="${id}" style="display: ${shouldHide ? 'none' : 'block'};">${pad}[`;
-				for (let i = 0; i < value.length; i++) {
-					html += renderField(i, value[i], indent + 1);
-				}
-				html += `<div>${pad}]</div></div>`;
-				return html;
-			} else if (typeof value === 'object') {
-				const id = getJsonId();
-				let html = `<div>${pad}<span class="font-semibold">${key}</span>: <button onclick="toggleJson('${id}')" class="text-yellow-400">[−]</button></div>`;
-				html += `<div id="${id}" style="display: 'block';">${pad}{`;
-				for (let subkey in value) {
-					html += renderField(subkey, value[subkey], indent + 1);
-				}
-				html += `<div>${pad}}</div></div>`;
-				return html;
-			}
-			return `<div>${pad}<span class="font-semibold">${key}</span>: <span>${String(value)}</span>,</div>`;
-		}
-
-		function toggleJson(id) {
-			const el = document.getElementById(id);
-			if (!el) return;
-			const visible = el.style.display !== 'none';
-			el.style.display = visible ? 'none' : 'block';
-
-			// Optional: update button text
-			const button = document.querySelector(`button[onclick="toggleJson('${id}')"]`);
-			if (button) {
-				button.textContent = visible ? '[+]' : '[−]';
-			}
-		}
-
-		function studinfo(student_idx) {
-			if (student_idx < 0 || student_idx >= students.length) {
-				console.warn(`Invalid student index: ${student_idx}`);
-				return;
-			}
-			const student = students[student_idx];
-
-			jsonIdCounter = 0;
-			container.innerHTML = ''; // Clear previous content
-			modalLogin.textContent = student.login ?? '[no login]';
-
-			const skipKeys = ['projects', 'exams', 'all_projects'];
-
-			for (let key in student) {
-				if (skipKeys.includes(key)) continue;
-				container.innerHTML += renderField(key, student[key]);
-			}
-			container.innerHTML += renderField('all_projects', student.all_projects);
-
-			toggleModal();
-		}
-
-		function toggleModal() {
-			overlay.classList.toggle('!block');
-			modal.classList.toggle('!block');
-		}
-
-		// -----------------------------------------------------------
-		// FILTER PANEL
-		// -----------------------------------------------------------
-
-		const filterPanel = document.querySelector('#filter-panel');
-		const filterOverlay = document.querySelector('#filter-overlay');
-		const customFilterRows = document.querySelector('#custom-filter-rows');
-
-		const RESERVED_FILTER_NAMES = new Set(
-			['fullscan', 'examname', 'projectname', 'sortby', 'order', 'campus_id', 'cpiscine_final_mark']
-		);
-
-		function openFilterPanel() {
-			filterOverlay.classList.remove('hidden');
-			filterPanel.classList.remove('translate-x-full');
-		}
-
-		function closeFilterPanel() {
-			filterOverlay.classList.add('hidden');
-			filterPanel.classList.add('translate-x-full');
-		}
-
-		function toggleFilterPanel() {
-			if (filterPanel.classList.contains('translate-x-full')) {
-				openFilterPanel();
-			} else {
-				closeFilterPanel();
-			}
-		}
-
-		function addCustomFilterRow(name = '', value = '') {
-			const row = document.createElement('div');
-			row.className = 'flex items-center gap-1';
-			row.innerHTML = `
-				<input type="text" placeholder="field name" value="${name}"
-					class="w-1/2 px-2 py-1 text-white border rounded bg-neutral-900 border-neutral-700 focus:outline-none focus:border-yellow-400">
-				<input type="text" placeholder="value" value="${value}"
-					class="flex-1 px-2 py-1 text-white border rounded bg-neutral-900 border-neutral-700 focus:outline-none focus:border-yellow-400">
-				<button type="button" class="px-2 text-red-400 hover:text-red-300" aria-label="Remove filter">&times;</button>
-			`;
-			const [nameInput, valueInput, removeBtn] = row.children;
-			nameInput.addEventListener('input', syncCustomFilterInputNames);
-			removeBtn.addEventListener('click', () => { row.remove(); });
-			customFilterRows.appendChild(row);
-			syncCustomFilterInputNames();
-		}
-
-		function syncCustomFilterInputNames() {
-			for (const row of customFilterRows.children) {
-				const [nameInput, valueInput] = row.children;
-				const fieldName = nameInput.value.trim();
-				valueInput.name = fieldName ? `custom__${fieldName}` : '';
-			}
-		}
-
-		// Pre-populate custom filter rows from current query params on page load
-		(function initCustomFilterRows() {
-			const params = new URLSearchParams(window.location.search);
-			let hasCustom = false;
-			for (const [key, value] of params.entries()) {
-				if (RESERVED_FILTER_NAMES.has(key)) continue;
-				addCustomFilterRow(key, value);
-				hasCustom = true;
-			}
-			if (hasCustom || params.toString().length) {
-				openFilterPanel();
-			}
-		})();
-
-		// Rename custom__<field> inputs to their real field name right before submit
-		document.querySelector('#filter-form').addEventListener('submit', () => {
-			for (const row of customFilterRows.children) {
-				const [nameInput, valueInput] = row.children;
-				const fieldName = nameInput.value.trim();
-				if (fieldName) {
-					valueInput.name = fieldName;
-				} else {
-					valueInput.removeAttribute('name');
-				}
-			}
-		});
-	</script>
+	<script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 
 </html>
