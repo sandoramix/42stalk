@@ -9,5 +9,56 @@ The good part is that there is a filtering system that allows you to filter by e
 2. Run `init.sh` to create a virtual environment and install dependencies
 3. Setup your .env with the 42 API credentials
 4. Fetch the students data by running `./fetch-students.sh` or `./fetch-students.sh <CAMPUS_ID>`
-5. Run the app by running `./run-server.sh`
+   - Students are saved to `data/campus_<CAMPUS_ID>_students.json`
+   - The campus becomes the default one in `config.json`
+5. Run the app by running `./run-server.sh` and open http://localhost:8080
 6. Enjoy the stalk!
+
+### Which students file is used?
+
+- `?campus_id=<id>` → `data/campus_<id>_students.json`
+- otherwise `data/students.json` if it exists, then the `defaultCampus` from `config.json`, then any fetched campus
+
+Every fetched campus shows up in the campus selector at the top of the page.
+
+### Fetching campuses from the web app
+
+The cloud button next to the campus selector (or <kbd>C</kbd>, or "Add or update campuses…" in the
+selector) opens the campus manager: search the list of 42 campuses, fetch new ones or update the ones
+you already have (one or many at once), pick the default campus, and refresh the campus list itself.
+Fetches run in the background with live progress, and you can keep using the app meanwhile.
+`./fetch-students.sh <CAMPUS_ID>` still works the same way from the terminal.
+
+## Full scan (exams & projects)
+
+The students list from the 42 API does not include exams, projects or levels. Enabling **Full scan**
+fetches each matching student's profile (one API request per student, ~2 requests/second).
+Profiles are cached for 12h in `data/cached_users.json`, so later scans are instant.
+Field filters are applied *before* fetching: narrow the list down first (e.g. `pool_year`).
+
+## Using the interface
+
+- **Click-to-filter**: hover any value and click the funnel icon, or <kbd>Ctrl</kbd>+click it to add it
+  to the filters (<kbd>Alt</kbd>+click to exclude it). New filters stay pending until you press
+  **Apply** (<kbd>Ctrl</kbd>+<kbd>Enter</kbd>).
+- **Exams / Projects tabs**: search and select exams or projects, filter by result, status and mark,
+  keep only the best attempt, and compare students in the matrix view.
+- **Cards / List**: the list view shows larger photos with stats, exam results and recent projects.
+  Click any photo to enlarge it (<kbd>←</kbd>/<kbd>→</kbd> to browse).
+- **Student details**: click a student for every field, all exams and projects, and the raw JSON.
+- Press <kbd>?</kbd> for keyboard shortcuts.
+
+## Query parameters
+
+Filters live in the URL, so any view can be shared or bookmarked.
+
+| Parameter | Meaning |
+| --- | --- |
+| `<any field>` | e.g. `pool_year=2025`, `kind===student`, `wallet=>=100`, `location=!=` (online) |
+| `fullscan` | fetch exams/projects for each student |
+| `examname` / `projectname` | name or slug contains (`\|` separates alternatives) |
+| `exam_mark`, `exam_status`, `exam_validated`, `exam_required` | narrow students by their exams (same with `project_`) |
+| `level`, `average_exam_final_mark`, `cpiscine_final_mark`, `exams_passed`, … | computed fields (need `fullscan`) |
+
+Conditions accept `>=`, `<=`, `>`, `<`, `==`, `!=` prefixes; without a prefix the value means "contains".
+Numbers are compared numerically.
