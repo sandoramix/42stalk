@@ -837,6 +837,8 @@ table.matrix td.cell .mark { min-width: 42px; }
 .loading-card { display: flex; align-items: center; gap: 16px; padding: 18px 22px; border-radius: 12px; background: var(--surface); border: 1px solid var(--border-strong); box-shadow: var(--shadow-lg); max-width: 440px; }
 .loading-title { font-weight: 600; }
 .loading-sub { font-size: 13px; color: var(--text-2); margin-top: 2px; }
+#loading-progress { margin-top: 10px; width: 100%; }
+.loading-text { flex: 1; min-width: 0; }
 .spinner { flex: none; width: 26px; height: 26px; border-radius: 50%; border: 3px solid var(--surface-3); border-top-color: var(--accent); animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 

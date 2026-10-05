@@ -312,25 +312,34 @@ def fetch_profile(user, idx=-1):
 	fetched_user['lastSave'] = str(time.time())
 	return fetched_user
 
+# Progress of the full scan currently running (polled by the page while it waits)
+SCAN_PROGRESS = {"active": False, "done": 0, "total": 0, "startedAt": None}
+
 def invalidateCache(filteredList: "list"=[]):
 	cache = load_user_cache()
-	fetched = {}
+	stale = {str(u['id']) for u in filteredList if is_cache_expired((cache.get(str(u['id'])) or {}).get('lastSave'))}
+	SCAN_PROGRESS.update(active=bool(stale), done=0, total=len(stale), startedAt=time.time())
+	pending = {}
 
 	result = []
 
-	for idx, user in enumerate(filteredList):
-		user_id = str(user['id'])
-		cache_entry = cache.get(user_id)
-
-		# Needs fetch if not cached or expired
-		if not cache_entry or is_cache_expired(cache_entry.get('lastSave')):
-			fetched_user = fetch_profile(user, idx)
-			fetched[user_id] = fetched_user
-			result.append(dict(fetched_user))
-		else:
-			result.append(dict(cache_entry))
-
-	merge_into_user_cache(fetched)
+	try:
+		for idx, user in enumerate(filteredList):
+			user_id = str(user['id'])
+			if user_id in stale:
+				fetched_user = fetch_profile(user, idx)
+				pending[user_id] = fetched_user
+				result.append(dict(fetched_user))
+				SCAN_PROGRESS["done"] += 1
+				# save as we go: an interrupted scan keeps what it fetched
+				if len(pending) >= 25:
+					merge_into_user_cache(pending)
+					pending = {}
+			else:
+				result.append(dict(cache[user_id]))
+	finally:
+		merge_into_user_cache(pending)
+		SCAN_PROGRESS["active"] = False
 	return result
 
 #-------------------------------------------------------------------------------
@@ -842,6 +851,10 @@ def jobs_snapshot():
 @app.route("/api/campuses")
 def CampusesAPI():
 	return jsonify({**campuses_overview(), "jobs": jobs_snapshot()})
+
+@app.route("/api/scan")
+def ScanProgressAPI():
+	return jsonify(SCAN_PROGRESS)
 
 @app.route("/api/jobs")
 def JobsAPI():

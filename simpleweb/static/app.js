@@ -225,7 +225,7 @@
 	const customParamNames = () => new Set([...(S.meta?.customFilters || []).map((f) => f.name), ...CLIENT_PARAMS]);
 
 	function paramsKey(pairs) {
-		return pairs.filter(([, v]) => v !== '').map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).sort().join('&');
+		return pairs.filter(([k, v]) => v !== '' || FLAG_PARAMS.has(k)).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).sort().join('&');
 	}
 	const getParam = (pairs, key) => (pairs.find(([k]) => k === key) || [])[1];
 	function setParam(pairs, key, value) {
@@ -302,11 +302,20 @@
 		const showLoading = setTimeout(() => {
 			$('#loading').hidden = false;
 			$('#loading-title').textContent = fullscan ? 'Running full scan…' : 'Loading students…';
-			const updateSub = () => {
+			const bar = $('#loading-progress');
+			bar.hidden = true;
+			const updateSub = async () => {
 				const elapsed = fmtDuration(Date.now() - started);
-				$('#loading-sub').textContent = fullscan
-					? `Students not cached yet are fetched from the 42 API, one request each. Elapsed ${elapsed}`
-					: `Elapsed ${elapsed}`;
+				$('#loading-sub').textContent = `Elapsed ${elapsed}`;
+				if (!fullscan) return;
+				try {
+					const scan = await (await fetch('/api/scan')).json();
+					if (loadController !== controller || !scan.active) return;
+					const left = scan.total - scan.done;
+					$('#loading-sub').textContent = `Fetched ${fmtNum(scan.done)} of ${plural(scan.total, 'profile')} from the 42 API · ${left ? apiEstimate(left) + ' left' : 'finishing'} · ${elapsed}`;
+					bar.hidden = false;
+					bar.firstElementChild.style.width = `${scan.total ? scan.done / scan.total * 100 : 0}%`;
+				} catch (e) { /* keep the elapsed time */ }
 			};
 			updateSub();
 			loadingTimer = setInterval(updateSub, 1000);
