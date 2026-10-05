@@ -1,82 +1,171 @@
 import json
 import logging
 import os
-from flask import Flask, render_template, request, send_from_directory
+import glob
+import threading
+from flask import Flask, Response, jsonify, render_template, request, send_from_directory
 import time
 from collections import defaultdict
 import numbers
 import re
-import math
 
 from api import API
 
 SERVER_PORT = 8080
 
-USER_CACHE_DIR = "../data/"
-if (not os.path.exists(USER_CACHE_DIR)):
-	os.mkdir(USER_CACHE_DIR)
-USER_CACHE_PATH = os.path.join(USER_CACHE_DIR, "cached_users.json")
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.environ.get("STALK_DATA_DIR", os.path.join(ROOT_DIR, "data"))
+CONFIG_PATH = os.path.join(ROOT_DIR, "config.json")
+if (not os.path.exists(DATA_DIR)):
+	os.mkdir(DATA_DIR)
+USER_CACHE_PATH = os.path.join(DATA_DIR, "cached_users.json")
+CAMPUSES_PATH = os.path.join(DATA_DIR, "campuses.json")
+DEFAULT_STUDENTS_PATH = os.path.join(DATA_DIR, "students.json")
 CACHE_EXPIRATION_HOURS = 12
 
 CPISCINE_FINAL_EXAM_NAME = "C Piscine Final Exam"
 
+# Fields computed by the server for every student (meaningful only after a fullscan)
+DERIVED_FIELDS = [
+	{"name": "average_exam_final_mark", "type": "number", "description": "Average final mark of the matching exams."},
+	{"name": "average_project_final_mark", "type": "number", "description": "Average final mark of the matching projects."},
+	{"name": "average_mark", "type": "number", "description": "Average final mark of every exam and project."},
+	{"name": "cpiscine_final_mark", "type": "number", "description": f"Final mark of the '{CPISCINE_FINAL_EXAM_NAME}'."},
+	{"name": "stage", "type": "string", "description": "'pisciner' (C Piscine is their only cursus), 'cadet' (enrolled in 42cursus) or 'other'."},
+	{"name": "cursus", "type": "array", "description": "Slugs of every cursus the student is enrolled in."},
+	{"name": "level", "type": "number", "description": "Level in the main cursus (42cursus if present, otherwise the highest)."},
+	{"name": "exams_passed", "type": "number", "description": "Number of validated exams."},
+	{"name": "projects_passed", "type": "number", "description": "Number of validated projects."},
+]
+DERIVED_FIELD_NAMES = {f["name"] for f in DERIVED_FIELDS}
 
-# Only these are filtered BEFORE fullscan
-BASIC_FILTERS = {
-}
+CONDITION_HELP = "Accepts >=, <=, >, <, ==, != prefixes (e.g. >=80); without a prefix it means 'contains'."
 
 CUSTOM_FILTERS = [
-	{"name": "fullscan", "type": "boolean", "nullable": True, "description": "If true, will fetch all exams and projects for each student."},
-	{"name": "examname", "type": "string", "nullable": True, "description": "Filter exams by name."},
-	{"name": "projectname", "type": "string", "nullable": True, "description": "Filter projects by name."},
-	{"name": "sortby", "type": "string", "nullable": True, "description": "Sort by field. Can be any field from the user object, or any of the following: average_exam_final_mark, average_project_final_mark, average_mark"},
-	{"name": "order", "type": "string", "nullable": True, "description": "Sort order. Can be either 'asc' or 'desc'"},
-	{"name": "campus_id", "type": "string", "nullable": True, "description": "Select which JSON file to use. If not provided, will use the default (students.json) one."},
-	{"name": "cpiscine_final_mark", "type": "string", "nullable": True, "description": f"Filter by final mark of the '{CPISCINE_FINAL_EXAM_NAME}' exam. Requires fullscan. Accepts >=, <=, >, <, ==, != prefixes."}
+	{"name": "fullscan", "type": "boolean", "description": "Fetch every exam and project of each student from the 42 API (cached for 12h)."},
+	{"name": "campus_id", "type": "string", "description": "Campus whose students file to use."},
+	{"name": "examname", "type": "string", "description": "Exam name (or slug) contains; separate alternatives with '|'."},
+	{"name": "exam_mark", "type": "string", "description": f"Final mark of a matching exam. {CONDITION_HELP}"},
+	{"name": "exam_status", "type": "string", "description": "Status of a matching exam (finished, in_progress, ...)."},
+	{"name": "exam_validated", "type": "boolean", "description": "Whether a matching exam is validated."},
+	{"name": "exam_required", "type": "boolean", "description": "Keep only students with at least one matching exam."},
+	{"name": "projectname", "type": "string", "description": "Project name (or slug) contains; separate alternatives with '|'."},
+	{"name": "project_mark", "type": "string", "description": f"Final mark of a matching project. {CONDITION_HELP}"},
+	{"name": "project_status", "type": "string", "description": "Status of a matching project (finished, in_progress, ...)."},
+	{"name": "project_validated", "type": "boolean", "description": "Whether a matching project is validated."},
+	{"name": "project_required", "type": "boolean", "description": "Keep only students with at least one matching project."},
+	{"name": "sortby", "type": "string", "description": "Sort by any field, including the computed ones."},
+	{"name": "order", "type": "string", "description": "Sort order: 'asc' or 'desc'."},
 ]
+# Parameters only used by the web client (never treated as filters)
+CLIENT_PARAMS = {"view", "display", "q", "page"}
+CUSTOM_FILTER_NAMES = {f["name"] for f in CUSTOM_FILTERS} | CLIENT_PARAMS
 
-cachedUsers = []
+app = Flask("server", root_path=os.path.dirname(os.path.abspath(__file__)))
 
+#------------------------------------------------------------------------------
+# STUDENTS FILES
 
-app = Flask("server")
+def load_config():
+	try:
+		with open(CONFIG_PATH, "r") as f:
+			return json.load(f)
+	except Exception:
+		return {}
+
+def campus_students_path(campus_id):
+	return os.path.join(DATA_DIR, f"campus_{campus_id}_students.json")
+
+def available_campus_ids():
+	ids = []
+	for path in glob.glob(os.path.join(DATA_DIR, "campus_*_students.json")):
+		match = re.match(r"campus_(\d+)_students\.json$", os.path.basename(path))
+		if match:
+			ids.append(int(match.group(1)))
+	return sorted(ids)
+
+def resolve_students_file(campus_id=None):
+	"""Returns (path, campus_id) of the students file to use, or (None, campus_id) if missing.
+
+	Without an explicit campus: data/students.json, then the default campus from
+	config.json, then the first campus file found."""
+	if campus_id is not None:
+		path = campus_students_path(campus_id)
+		return (path if os.path.exists(path) else None), campus_id
+	if os.path.exists(DEFAULT_STUDENTS_PATH):
+		return DEFAULT_STUDENTS_PATH, None
+	default_campus = load_config().get("defaultCampus")
+	if default_campus is not None and os.path.exists(campus_students_path(default_campus)):
+		return campus_students_path(default_campus), int(default_campus)
+	ids = available_campus_ids()
+	if ids:
+		return campus_students_path(ids[0]), ids[0]
+	return None, None
+
+_students_file_cache = {}
+
+def load_students_file(path):
+	"""Loads a students file (cached by modification time). Returns (students, basic_keys)."""
+	mtime = os.path.getmtime(path)
+	cached = _students_file_cache.get(path)
+	if not cached or cached[0] != mtime:
+		with open(path, 'r') as file:
+			data = json.load(file)
+		keys = set()
+		for student in data:
+			keys.update(flatten_keys(student).keys())
+		cached = (mtime, data, keys)
+		_students_file_cache[path] = cached
+	# shallow copies: request handling adds computed fields to each student
+	return [dict(s) for s in cached[1]], cached[2]
+
+def load_campuses():
+	names = {}
+	try:
+		with open(CAMPUSES_PATH, "r") as f:
+			for campus in json.load(f).get("data", []):
+				names[campus["id"]] = campus
+	except Exception:
+		pass
+	result = []
+	for campus_id in available_campus_ids():
+		campus = names.get(campus_id, {})
+		result.append({
+			"id": campus_id,
+			"name": campus.get("name", f"Campus {campus_id}"),
+			"country": campus.get("country"),
+		})
+	return result
+
+def parse_campus_id(value):
+	try:
+		return int(str(value))
+	except (TypeError, ValueError):
+		return None
 
 @app.route("/api/students")
-def StudentsAPI(campus_id:"str|int|None"=None):
-	global BASIC_FILTERS
+def StudentsAPI():
+	path, _ = resolve_students_file(parse_campus_id(request.args.get('campus_id')))
+	if not path:
+		return []
 	try:
-		# get a possible `campus_id` query parameter
-		try:
-			campus_id = str(campus_id if campus_id is not None else request.args.get('campus_id'))
-			campus_id = int(campus_id)
-		except:
-			campus_id = None
-		filename = "../data/students.json"
-		if campus_id is not None:
-			filename = f"../data/campus_{campus_id}_students.json"
-		if not os.path.exists(filename):
-			logging.error(f"File {filename} does not exist")
-			return []
-		with open(filename, 'r') as file:
-			data = json.load(file)
-		BASIC_FILTERS = set(flatten_keys(data[0]).keys())
-		return data
+		return load_students_file(path)[0]
 	except Exception as e:
 		logging.exception(e)
 		return []
 
 @app.route("/api/students/keys")
-def StudentsKeysAPI(customData=None):
-	if customData:
-		students = customData
-	else:
-		students = StudentsAPI()
-	if not students or len(students) == 0:
+def StudentsKeysAPI():
+	return students_keys(StudentsAPI())
+
+def students_keys(students, sample_size=500):
+	if not students:
 		return []
 
 	field_types = defaultdict(set)
 	field_nullable = defaultdict(lambda: False)
 
-	for student in students:
+	for student in students[:sample_size]:
 		flat = flatten_keys(student)
 		for key, typ in flat.items():
 			if typ == "null":
@@ -90,8 +179,8 @@ def StudentsKeysAPI(customData=None):
 			field_nullable[key] = True
 
 	result = []
-	for key in sorted(field_types.keys()):
-		types = sorted(field_types[key])
+	for key in sorted(set(field_types.keys()) | set(field_nullable.keys())):
+		types = sorted(field_types[key]) or ["null"]
 		result.append({
 			"name": key,
 			"type": types[0] if len(types) == 1 else "|".join(types),
@@ -148,6 +237,9 @@ def flatten_keys(obj, parent_key=""):
 #------------------------------------------------------------------------------
 # FETCH STUDENT DATA
 
+def is_exam(entry):
+	return 'exam' in ((entry.get('project') or {}).get('slug') or '').lower()
+
 def getStudData(user, idx = -1):
 	try:
 		_ = API.getUserByID(user["id"])
@@ -159,10 +251,8 @@ def getStudData(user, idx = -1):
 		_['failedFetchExams'] = True
 	else:
 		_['failedFetchExams'] = False
-		_['all_projects'] = _['projects_users']
-		_['exams'] = [i for i in _['projects_users'] if 'project' in i and 'slug' in i['project'] and 'exam' in i['project']['slug'].lower()]
-		_['projects'] = [i for i in _['projects_users'] if 'project' in i and 'slug' in i['project'] and 'exam' not in i['project']['slug'].lower()]
-	print(f'parsed-[{idx}]\t{user["id"]=}\t{user["login"]=}\t{len(_["all_projects"])=}')
+		_['all_projects'] = [i for i in _.get('projects_users', []) if 'project' in i and 'slug' in i['project']]
+	print(f'parsed-[{idx}]\t{user["id"]=}\t{user["login"]=}\t{len(_.get("all_projects", []))=}')
 	return _
 
 #-------------------------------------------------------------------------------
@@ -178,26 +268,53 @@ def load_user_cache():
 		logging.exception(f"Failed to load user cache: {e}")
 		return {}
 
+_cache_freshness = (None, {})
+
+def cached_user_timestamps():
+	"""{user_id: lastSave} of the user cache, reloaded only when the file changes."""
+	global _cache_freshness
+	if not os.path.exists(USER_CACHE_PATH):
+		return {}
+	mtime = os.path.getmtime(USER_CACHE_PATH)
+	if _cache_freshness[0] != mtime:
+		_cache_freshness = (mtime, {k: v.get('lastSave') for k, v in load_user_cache().items()})
+	return _cache_freshness[1]
+
 def save_user_cache(cache):
 	try:
 		with open(USER_CACHE_PATH, 'w') as f:
-			json.dump(cache, f, indent=2)
+			json.dump(cache, f)
 	except Exception as e:
 		logging.exception(f"Failed to save user cache: {e}")
 
 def is_cache_expired(timestamp_str):
 	try:
 		last_saved = float(timestamp_str)
-		age_days = (time.time() - last_saved) / (60 * 60)
-		return age_days > CACHE_EXPIRATION_HOURS
+		age_hours = (time.time() - last_saved) / (60 * 60)
+		return age_hours > CACHE_EXPIRATION_HOURS
 	except:
 		return True
 
-def invalidateCache(filteredList: "list"=[]):
+CACHE_LOCK = threading.Lock()
 
-	global cachedUsers
+def merge_into_user_cache(entries):
+	"""Adds fetched profiles to the cache file without losing entries written meanwhile."""
+	if not entries:
+		return
+	with CACHE_LOCK:
+		cache = load_user_cache()
+		cache.update(entries)
+		save_user_cache(cache)
+		print(f'Cache updated. Size: {len(cache)}')
+
+def fetch_profile(user, idx=-1):
+	fetched_user = getStudData(user, idx)
+	fetched_user['lastSave'] = str(time.time())
+	return fetched_user
+
+def invalidateCache(filteredList: "list"=[]):
 	cache = load_user_cache()
-	cachedUsers = cache
+	fetched = {}
 
 	result = []
 
@@ -207,15 +324,13 @@ def invalidateCache(filteredList: "list"=[]):
 
 		# Needs fetch if not cached or expired
 		if not cache_entry or is_cache_expired(cache_entry.get('lastSave')):
-			fetched_user = getStudData(user, idx)
-			fetched_user['lastSave'] = str(time.time())
-			cache[user_id] = fetched_user
-			result.append(fetched_user)
+			fetched_user = fetch_profile(user, idx)
+			fetched[user_id] = fetched_user
+			result.append(dict(fetched_user))
 		else:
-			result.append(cache_entry)
+			result.append(dict(cache_entry))
 
-	save_user_cache(cache)
-	print(f'Cache invalidated. New size: {len(result)}')
+	merge_into_user_cache(fetched)
 	return result
 
 #-------------------------------------------------------------------------------
@@ -226,7 +341,7 @@ def nested(obj: object, attr_path: str, first=False, flatten=True, as_set=False)
 
 	def parse_key(part):
 		"""Handles list indices like 'key[0]' or just 'key'"""
-		match = re.match(r"(\w+)(?:\[(\d+)\])?", part)
+		match = re.match(r"(\w+\??)(?:\[(\d+)\])?$", part)
 		if not match:
 			return part, None
 		key, idx = match.groups()
@@ -275,145 +390,511 @@ def nested(obj: object, attr_path: str, first=False, flatten=True, as_set=False)
 	return result
 
 
+def to_number(value):
+	if isinstance(value, bool):
+		return None
+	if isinstance(value, numbers.Number):
+		return float(value)
+	try:
+		return float(str(value).strip())
+	except (TypeError, ValueError):
+		return None
+
+def normalize(value):
+	if value is None:
+		return ""
+	if isinstance(value, bool):
+		return "true" if value else "false"
+	return str(value)
+
+COMPARATORS = {
+	">=": lambda a, b: a >= b,
+	"<=": lambda a, b: a <= b,
+	"==": lambda a, b: a == b,
+	"!=": lambda a, b: a != b,
+	">": lambda a, b: a > b,
+	"<": lambda a, b: a < b,
+}
+
+def split_condition(condition):
+	condition = str(condition)
+	for op in COMPARATORS:  # two-char operators are listed first
+		if condition.startswith(op):
+			return op, condition[len(op):]
+	return None, condition
+
 def conditional(value, condition):
+	"""Checks `value` against `condition` ('>=80', '==kind', '!=x', 'substring').
+
+	Numbers are compared numerically, text case-insensitively. For list values the
+	condition must hold for any element (for every element with '!=')."""
+	op, expected = split_condition(condition)
 	if isinstance(value, list):
+		if not value:
+			value = [None]
+		if op == "!=":
+			return all(conditional(v, condition) for v in value)
 		return any(conditional(v, condition) for v in value)
 
-	condition = str(condition)
-	value = "" if value is None else str(value)
+	if op is None:
+		return expected.lower() in normalize(value).lower()
 
-	if condition.startswith(">="):
-		return value >= condition[2:]
-	elif condition.startswith("<="):
-		return value <= condition[2:]
-	elif condition.startswith(">"):
-		return value > condition[1:]
-	elif condition.startswith("<"):
-		return value < condition[1:]
-	elif condition.startswith("=="):
-		return value == condition[2:]
-	elif condition.startswith("!="):
-		return value != condition[2:]
-	else:
-		return condition in value
+	left, right = to_number(value), to_number(expected)
+	if left is not None and right is not None:
+		return COMPARATORS[op](left, right)
+	if op in ("==", "!="):
+		return COMPARATORS[op](normalize(value).lower(), expected.lower())
+	if value is None or expected == "":
+		return False
+	return COMPARATORS[op](normalize(value).lower(), expected.lower())
 
-def sort_by_exam_final_grade_and_login(users: "list[dict]"):
-	return sorted(users, key=lambda user: user['average_exam_final_mark'], reverse=True)
+def is_truthy(value):
+	return str(value).lower() not in ("", "0", "false", "no", "off")
 
-def get_average_final_mark(user, objName="exams"):
-	exams = user.get(objName, [])
-	total = sum([e['final_mark'] for e in exams if e['final_mark'] is not None or 0])
-	if len(exams) == 0:
-		return 0
-	return float(f'{total / len(exams):.2f}')
+def get_average_final_mark(entries):
+	marks = [e['final_mark'] for e in entries if isinstance(e.get('final_mark'), numbers.Number)]
+	if not marks:
+		return None
+	return round(sum(marks) / len(marks), 2)
 
+def get_level(user):
+	cursus_users = user.get('cursus_users') or []
+	main = next((c for c in cursus_users if (c.get('cursus') or {}).get('slug') == '42cursus'), None)
+	if main is not None:
+		return main.get('level')
+	levels = [c.get('level') for c in cursus_users if isinstance(c.get('level'), numbers.Number)]
+	return max(levels) if levels else None
 
-def sort_by(users: list[object], sortBy: str, reverse: bool = False):
-	def safe_sort_key(user: object):
+# The 42 API ids/slugs of the main curriculum and of the C Piscine
+CADET_CURSUS = {21: "42cursus", 1: "42"}
+CPISCINE_CURSUS = {9: "c-piscine"}
+
+def cursus_slugs(user):
+	slugs = []
+	for c in user.get('cursus_users') or []:
+		cursus = c.get('cursus') or {}
+		slug = cursus.get('slug') or CADET_CURSUS.get(c.get('cursus_id')) or CPISCINE_CURSUS.get(c.get('cursus_id'))
+		if slug:
+			slugs.append(slug)
+	return slugs
+
+def get_stage(slugs):
+	"""'cadet' if in the main curriculum, 'pisciner' if the C Piscine is the only cursus, else 'other'."""
+	if not slugs:
+		return None
+	if any(s in CADET_CURSUS.values() for s in slugs):
+		return "cadet"
+	if all(s in CPISCINE_CURSUS.values() for s in slugs):
+		return "pisciner"
+	return "other"
+
+def sort_by(users: list, sortBy: str, reverse: bool = False):
+	def safe_sort_key(user):
 		value = nested(user, sortBy)
 		if isinstance(value, list):
-			return value[0] if value else float('-inf')
+			value = value[0] if value else None
 		if value is None:
-			return float('-inf')
-		return value
-	return sorted(users, key=safe_sort_key, reverse=reverse)
+			return (0, 0, 0)
+		number = to_number(value)
+		if number is not None:
+			return (1, 0, number)
+		return (1, 1, normalize(value).lower())
+	# missing values always go last
+	present = [u for u in users if safe_sort_key(u)[0] == 1]
+	missing = [u for u in users if safe_sort_key(u)[0] == 0]
+	return sorted(present, key=safe_sort_key, reverse=reverse) + missing
+
+#-------------------------------------------------------------------------------
+# EXAM / PROJECT CRITERIA
+
+def entry_criteria(args, prefix, name_param):
+	names = [n.strip().lower() for n in args.get(name_param, "").split("|") if n.strip()]
+	criteria = {
+		"names": names,
+		"mark": args.get(f"{prefix}_mark", ""),
+		"status": args.get(f"{prefix}_status", ""),
+		"validated": args.get(f"{prefix}_validated", ""),
+	}
+	# Any criteria besides the name narrows the students too
+	required_param = f"{prefix}_required"
+	criteria["required"] = (required_param in args and is_truthy(args.get(required_param) or "true")) or any(
+		criteria[k] for k in ("mark", "status", "validated"))
+	return criteria
+
+def match_entries(entries, criteria):
+	result = []
+	for entry in entries:
+		project = entry.get('project') or {}
+		if criteria["names"]:
+			name = (project.get('name') or '').lower()
+			slug = (project.get('slug') or '').lower()
+			if not any(n in name or n in slug for n in criteria["names"]):
+				continue
+		if criteria["mark"] and not conditional(entry.get('final_mark'), criteria["mark"]):
+			continue
+		if criteria["status"] and not conditional(entry.get('status'), criteria["status"]):
+			continue
+		if criteria["validated"] and not conditional(entry.get('validated?'), criteria["validated"]):
+			continue
+		result.append(entry)
+	return result
+
+def enrich(user, exam_criteria, project_criteria):
+	all_projects = user.get('all_projects') or []
+	exams = [e for e in all_projects if is_exam(e)]
+	projects = [e for e in all_projects if not is_exam(e)]
+	user['exams'] = match_entries(exams, exam_criteria)
+	user['projects'] = match_entries(projects, project_criteria)
+	user['average_exam_final_mark'] = get_average_final_mark(user['exams'])
+	user['average_project_final_mark'] = get_average_final_mark(user['projects'])
+	user['average_mark'] = get_average_final_mark(all_projects)
+	cpiscine_exam = next((e for e in all_projects if (e.get('project') or {}).get('name') == CPISCINE_FINAL_EXAM_NAME), None)
+	user['cpiscine_final_mark'] = cpiscine_exam.get('final_mark') if cpiscine_exam else None
+	user['level'] = get_level(user)
+	slugs = cursus_slugs(user)
+	user['cursus'] = slugs or None
+	user['stage'] = get_stage(slugs)
+	user['exams_passed'] = sum(1 for e in exams if e.get('validated?')) if all_projects else None
+	user['projects_passed'] = sum(1 for e in projects if e.get('validated?')) if all_projects else None
+
+def client_payload(user):
+	"""Removes duplicated lists: the client rebuilds them from `all_projects`."""
+	payload = {k: v for k, v in user.items() if k not in ('projects_users', 'exams', 'projects')}
+	payload['matched_exams'] = [e.get('id') for e in user.get('exams', [])]
+	payload['matched_projects'] = [e.get('id') for e in user.get('projects', [])]
+	return payload
+
+#-------------------------------------------------------------------------------
+# SEARCH
+
+def search(args):
+	campus_id = parse_campus_id(args.get('campus_id'))
+	path, resolved_campus = resolve_students_file(campus_id)
+	meta = {
+		"campusId": resolved_campus,
+		"requestedCampusId": campus_id,
+		"file": os.path.relpath(path, ROOT_DIR) if path else None,
+		"campuses": load_campuses(),
+		"defaultCampus": load_config().get("defaultCampus"),
+		"hasDefaultFile": os.path.exists(DEFAULT_STUDENTS_PATH),
+		"fullscan": args.get("fullscan") is not None and is_truthy(args.get("fullscan") or "true"),
+		"customFilters": CUSTOM_FILTERS,
+		"derivedFields": DERIVED_FIELDS,
+		"total": 0,
+		"count": 0,
+		"fields": [],
+		"basicFields": [],
+		"unknownKeys": [],
+		"needsFullscan": [],
+		"cachedCount": 0,
+		"cacheHours": CACHE_EXPIRATION_HOURS,
+		"jobsActive": bool(JOBS["current"] or JOBS["queue"]),
+		"error": None,
+	}
+	if not path:
+		meta["error"] = "missing_data"
+		return meta, []
+	try:
+		students, basic_keys = load_students_file(path)
+	except Exception as e:
+		logging.exception(e)
+		meta["error"] = "invalid_data"
+		return meta, []
+	meta["total"] = len(students)
+	meta["basicFields"] = sorted(basic_keys)
+
+	pending = {k: v for k, v in args.items() if k not in CUSTOM_FILTER_NAMES and v != ''}
+
+	# 1. Basic filters, before the (slow) fullscan
+	filtered = students
+	for arg, val in list(pending.items()):
+		if arg in basic_keys:
+			filtered = [stud for stud in filtered if conditional(nested(stud, arg, as_set=True), val)]
+			del pending[arg]
+
+	exam_criteria = entry_criteria(args, "exam", "examname")
+	project_criteria = entry_criteria(args, "project", "projectname")
+
+	# 2. Fullscan: fetch every remaining student (cached)
+	if meta["fullscan"]:
+		filtered = invalidateCache(filteredList=filtered)
+
+	for user in filtered:
+		enrich(user, exam_criteria, project_criteria)
+
+	if meta["fullscan"]:
+		# 3. Filters on fetched or computed fields
+		fetched_keys = set(DERIVED_FIELD_NAMES)
+		for user in filtered[:200]:
+			fetched_keys.update(flatten_keys(user).keys())
+		for arg, val in list(pending.items()):
+			if arg in fetched_keys:
+				filtered = [stud for stud in filtered if conditional(nested(stud, arg, as_set=True), val)]
+				del pending[arg]
+		if exam_criteria["required"]:
+			filtered = [u for u in filtered if u['exams']]
+		if project_criteria["required"]:
+			filtered = [u for u in filtered if u['projects']]
+	else:
+		# Exam/project criteria and computed fields need the fetched profiles
+		needs = {k for k in args if args.get(k) and re.match(r"(exam|project)_", k)}
+		needs |= {k for k in pending if k in DERIVED_FIELD_NAMES}
+		meta["needsFullscan"] = sorted(needs)
+		for k in needs:
+			pending.pop(k, None)
+
+	sortBy = args.get("sortby")
+	if sortBy:
+		filtered = sort_by(filtered, sortBy, reverse=args.get("order") == "desc")
+
+	timestamps = cached_user_timestamps()
+	meta["cachedCount"] = sum(1 for u in filtered if not is_cache_expired(timestamps.get(str(u.get('id')))))
+	meta["unknownKeys"] = sorted(pending.keys())
+	meta["count"] = len(filtered)
+	meta["fields"] = students_keys(filtered) if meta["fullscan"] else students_keys(students)
+	return meta, [client_payload(u) for u in filtered]
+
+@app.route("/api/search")
+def SearchAPI():
+	meta, students = search(request.args)
+	body = json.dumps({"meta": meta, "students": students}, separators=(",", ":"), default=str)
+	return Response(body, mimetype="application/json")
+
+#-------------------------------------------------------------------------------
+# CAMPUSES: catalog, local files and background fetch jobs
+
+def load_campus_catalog():
+	try:
+		with open(CAMPUSES_PATH, "r") as f:
+			data = json.load(f)
+		return data.get("data", []), data.get("lastFetch")
+	except Exception:
+		return [], None
+
+_count_cache = {}
+
+def campus_file_info(campus_id):
+	path = campus_students_path(campus_id)
+	if not os.path.exists(path):
+		return None
+	mtime = os.path.getmtime(path)
+	cached = _count_cache.get(path)
+	if not cached or cached[0] != mtime:
+		try:
+			with open(path, "r") as f:
+				ids = [str(u.get("id")) for u in json.load(f)]
+		except Exception:
+			ids = []
+		cached = (mtime, ids)
+		_count_cache[path] = cached
+	ids = cached[1]
+	timestamps = cached_user_timestamps()
+	detailed = sum(1 for i in ids if not is_cache_expired(timestamps.get(i)))
+	return {"count": len(ids), "fetchedAt": mtime, "detailed": detailed}
+
+def campuses_overview():
+	catalog, catalog_fetched_at = load_campus_catalog()
+	default_campus = load_config().get("defaultCampus")
+	by_id = {c["id"]: c for c in catalog}
+	ids = sorted(set(by_id) | set(available_campus_ids()))
+	result = []
+	for campus_id in ids:
+		campus = by_id.get(campus_id, {})
+		result.append({
+			"id": campus_id,
+			"name": campus.get("name", f"Campus {campus_id}"),
+			"city": campus.get("city"),
+			"country": campus.get("country"),
+			"usersCount": campus.get("users_count"),
+			"active": campus.get("active", True),
+			"local": campus_file_info(campus_id),
+			"isDefault": campus_id == default_campus,
+		})
+	return {"campuses": result, "catalogFetchedAt": catalog_fetched_at}
+
+def api_paginated(path, on_page=None):
+	"""GETs every page of a 42 API listing (rate-limit aware, keeps pages already fetched)."""
+	data = []
+	page = 1
+	auth_retries = 0
+	while True:
+		r = API.session.get(f"{API.api_url}{path}", params={"per_page": 100, "page": page})
+		if r.status_code == 429:
+			time.sleep(1)
+			continue
+		if r.status_code == 401 and auth_retries < 2:
+			auth_retries += 1
+			API.session.headers.update(API._Api42__getTokenHeader())
+			continue
+		if r.status_code != 200:
+			raise RuntimeError(f"42 API responded {r.status_code}: {r.text[:200]}")
+		auth_retries = 0
+		items = r.json()
+		data += items
+		if on_page:
+			total = r.headers.get("X-Total")
+			on_page(len(data), int(total) if total and total.isdigit() else None)
+		if len(items) < 100:
+			return data
+		page += 1
+
+JOBS_LOCK = threading.Lock()
+JOBS = {"current": None, "queue": [], "history": []}
+_job_counter = 0
+_job_worker = None
+
+def write_json_atomic(path, data, **kwargs):
+	tmp = path + ".tmp"
+	with open(tmp, "w") as f:
+		json.dump(data, f, **kwargs)
+	os.replace(tmp, path)
+
+# Only what the campus manager needs from the campus list
+CAMPUS_FIELDS = ("id", "name", "city", "country", "users_count", "active", "public")
+
+class JobCancelled(Exception):
+	pass
+
+def fetch_campus_details(job, progress):
+	"""Fetches the full profile of every student of a campus not cached yet (same cache as fullscan)."""
+	path = campus_students_path(job["campusId"])
+	if not os.path.exists(path):
+		raise RuntimeError("Fetch the students of this campus first")
+	students, _ = load_students_file(path)
+	timestamps = cached_user_timestamps()
+	todo = [u for u in students if is_cache_expired(timestamps.get(str(u.get("id"))))]
+	job["skipped"] = len(students) - len(todo)
+	progress(0, len(todo))
+	pending = {}
+	try:
+		for idx, user in enumerate(todo):
+			if job.get("cancel"):
+				raise JobCancelled()
+			pending[str(user["id"])] = fetch_profile(user, idx)
+			progress(idx + 1, len(todo))
+			if len(pending) >= 25:
+				merge_into_user_cache(pending)
+				pending = {}
+	finally:
+		# keep whatever was fetched, even when cancelled or failing midway
+		merge_into_user_cache(pending)
+	job["count"] = len(todo)
+
+def run_job(job):
+	def progress(done, total):
+		with JOBS_LOCK:
+			job["done"] = done
+			job["total"] = total
+	if job["type"] == "campus":
+		users = api_paginated(f"/campus/{job['campusId']}/users", progress)
+		write_json_atomic(campus_students_path(job["campusId"]), users, indent=2)
+		job["count"] = len(users)
+	elif job["type"] == "catalog":
+		campuses = api_paginated("/campus", progress)
+		slim = [{k: c.get(k) for k in CAMPUS_FIELDS} for c in campuses]
+		write_json_atomic(CAMPUSES_PATH, {"lastFetch": time.time(), "data": slim}, indent=2)
+		job["count"] = len(slim)
+	elif job["type"] == "details":
+		fetch_campus_details(job, progress)
+
+def job_worker():
+	global _job_worker
+	while True:
+		with JOBS_LOCK:
+			if not JOBS["queue"]:
+				JOBS["current"] = None
+				_job_worker = None
+				return
+			job = JOBS["queue"].pop(0)
+			job.update(status="running", startedAt=time.time())
+			JOBS["current"] = job
+		try:
+			run_job(job)
+			job["status"] = "done"
+		except JobCancelled:
+			job["status"] = "cancelled"
+		except Exception as e:
+			logging.exception(e)
+			job.update(status="error", error=str(e))
+		job["finishedAt"] = time.time()
+		with JOBS_LOCK:
+			JOBS["current"] = None
+			JOBS["history"] = [job] + JOBS["history"][:29]
+
+def enqueue_jobs(new_jobs):
+	global _job_counter, _job_worker
+	with JOBS_LOCK:
+		pending = [j for j in JOBS["queue"] + ([JOBS["current"]] if JOBS["current"] else [])]
+		for job in new_jobs:
+			if any(j["type"] == job["type"] and j.get("campusId") == job.get("campusId") for j in pending):
+				continue
+			_job_counter += 1
+			job.update(id=_job_counter, status="queued", queuedAt=time.time(), done=0, total=None)
+			JOBS["queue"].append(job)
+		if _job_worker is None and JOBS["queue"]:
+			_job_worker = threading.Thread(target=job_worker, daemon=True)
+			_job_worker.start()
+
+def jobs_snapshot():
+	with JOBS_LOCK:
+		return json.loads(json.dumps(JOBS))
+
+@app.route("/api/campuses")
+def CampusesAPI():
+	return jsonify({**campuses_overview(), "jobs": jobs_snapshot()})
+
+@app.route("/api/jobs")
+def JobsAPI():
+	return jsonify(jobs_snapshot())
+
+@app.route("/api/campuses/fetch", methods=["POST"])
+def FetchCampusesAPI():
+	names = {c["id"]: c["name"] for c in campuses_overview()["campuses"]}
+	ids = [parse_campus_id(i) for i in (request.get_json(silent=True) or {}).get("ids", [])]
+	ids = [i for i in ids if i is not None]
+	if not ids:
+		return jsonify({"error": "No campus selected"}), 400
+	job_type = "details" if (request.get_json(silent=True) or {}).get("what") == "details" else "campus"
+	enqueue_jobs([{"type": job_type, "campusId": i, "name": names.get(i, f"Campus {i}")} for i in ids])
+	return jsonify(jobs_snapshot())
+
+@app.route("/api/jobs/cancel", methods=["POST"])
+def CancelJobAPI():
+	job_id = (request.get_json(silent=True) or {}).get("id")
+	with JOBS_LOCK:
+		for job in list(JOBS["queue"]):
+			if job["id"] == job_id:
+				JOBS["queue"].remove(job)
+				job.update(status="cancelled", finishedAt=time.time())
+				JOBS["history"] = [job] + JOBS["history"][:29]
+		if JOBS["current"] and JOBS["current"]["id"] == job_id:
+			JOBS["current"]["cancel"] = True
+	return jsonify(jobs_snapshot())
+
+@app.route("/api/campuses/catalog", methods=["POST"])
+def RefreshCatalogAPI():
+	enqueue_jobs([{"type": "catalog", "name": "Campus list"}])
+	return jsonify(jobs_snapshot())
+
+@app.route("/api/campuses/default", methods=["POST"])
+def DefaultCampusAPI():
+	campus_id = parse_campus_id((request.get_json(silent=True) or {}).get("id"))
+	if campus_id is None:
+		return jsonify({"error": "Invalid campus"}), 400
+	config = load_config()
+	config["defaultCampus"] = campus_id
+	write_json_atomic(CONFIG_PATH, config, indent=2)
+	return jsonify(campuses_overview())
 
 @app.route("/")
 def Homepage():
-	possibleCampusId = request.args.get('campus_id')
-	students = StudentsAPI(possibleCampusId)
-	if len(students) == 0:
-		return render_template("index.html", students=[], fields=[], active_filters=[])
-
-	args = request.args
-
-	unknownKeys = set(args.keys())
-	for key in CUSTOM_FILTERS:
-		keyname = key['name']
-		if keyname in unknownKeys:
-			unknownKeys.remove(keyname)
-
-	checkForFinalExam = args.get("fullscan") is not None
-	examNameFilter = args.get("examname", "").lower()
-	projectNameFilter = args.get("projectname", "").lower()
-	cpiscineFinalMarkFilter = args.get("cpiscine_final_mark", None)
-
-	sortBy = args.get("sortby", None)
-	sortReverse = args.get("order", None) == "desc"
-
-	# -----------------------------
-	# 1. BASIC FILTERS — pre-fetch
-	# -----------------------------
-	filtered = students
-	for arg, val in args.items():
-		if arg in BASIC_FILTERS:
-			unknownKeys.remove(arg)
-			filtered = [
-				stud for stud in filtered
-				if conditional(nested(stud, arg, as_set=True), val)
-			]
-
-	# ---------------------------------
-	# 2. Fullscan if requested (fetch)
-	# ---------------------------------
-	if checkForFinalExam:
-		filtered = invalidateCache(filteredList=filtered)
-		fetchedKeys = []
-		if len(filtered) > 0:
-			fetchedKeys = flatten_keys(filtered[0])
-
-		for user in filtered:
-			cpiscine_exam = next((e for e in user.get('all_projects', []) if e.get('project', {}).get('name') == CPISCINE_FINAL_EXAM_NAME), None)
-			user['cpiscine_final_mark'] = cpiscine_exam['final_mark'] if cpiscine_exam else None
-
-		if cpiscineFinalMarkFilter is not None:
-			filtered = [
-				stud for stud in filtered
-				if conditional(stud.get('cpiscine_final_mark'), cpiscineFinalMarkFilter)
-			]
-
-		# -----------------------------
-		# 3. CUSTOM FILTERS — post-fetch
-		# -----------------------------
-		for arg, val in args.items():
-			arg = arg.lower()
-			if arg in BASIC_FILTERS or len([i['name'] for i in CUSTOM_FILTERS if i['name'] == arg]) > 0:
-				continue  # already applied or internal
-			if arg not in fetchedKeys:
-				continue # unknown key
-			unknownKeys.remove(arg)
-			filtered = [
-				stud for stud in filtered
-				if conditional(nested(stud, arg, as_set=True), val)
-			]
-
-	# -------------------------
-	# Final processing
-	# -------------------------
-	for user in filtered:
-		user['exams'] = [e for e in user.get('all_projects', []) if 'exam' in e['project']['slug'].lower() and (examNameFilter in e['project']['slug'].lower() or examNameFilter == '')]
-		user['projects'] = [e for e in user.get('all_projects', []) if 'exam' not in e['project']['slug'].lower() and (projectNameFilter in e['project']['slug'].lower() or projectNameFilter == '')]
-		user['average_exam_final_mark'] = get_average_final_mark(user)
-		user['average_project_final_mark'] = get_average_final_mark(user, objName="projects")
-		user['average_mark'] = get_average_final_mark(user, objName="all_projects")
-
-	if sortBy:
-		sorted_result = sort_by(filtered, sortBy, reverse=sortReverse)
-	else:
-		sorted_result = filtered
-	fields = StudentsKeysAPI(customData=sorted_result)
-	active_filters = [k for k in args.keys() if k not in unknownKeys and args.get(k) != '']
-	return render_template("index.html", students=sorted_result, students_json=json.dumps(sorted_result), fields=fields, customFields = CUSTOM_FILTERS, unknownKeys=list(unknownKeys), active_filters=active_filters)
+	return render_template("index.html")
 
 #-------------------------------------------------------------------------------
 
 @app.route('/favicon.ico')
 def favicon():
-	return send_from_directory(os.path.join(app.root_path, 'static'), 'favicon.ico', mimetype='image/vnd.microsoft.icon')
-
-@app.route('/static/<file>')
-def static_files(file):
-	return send_from_directory(os.path.join(app.root_path, 'static'), file)
+	return send_from_directory(os.path.join(app.root_path, 'static'), '42.jpg')
 
 @app.route("/<page>")
 def Other(page):
