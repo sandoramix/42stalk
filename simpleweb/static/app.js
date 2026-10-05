@@ -960,6 +960,7 @@
 				</label>
 				${m.fullscan ? stageSwitch() : ''}
 				${rescanButton()}
+				<button class="btn btn-sm" data-act="ex-open" title="Export these students as CSV or JSON (E)" ${list.length ? '' : 'disabled'}><i class="fa fa-download"></i>Export</button>
 				<div class="segmented" role="group" aria-label="Display">
 					<button class="${S.display === 'grid' ? 'active' : ''}" data-act="display" data-display="grid" title="Cards (G)"><i class="fa fa-th-large"></i>Cards</button>
 					<button class="${S.display === 'table' ? 'active' : ''}" data-act="display" data-display="table" title="Detailed list (G)"><i class="fa fa-list"></i>List</button>
@@ -2014,6 +2015,572 @@
 		}
 	}
 
+	/* ---------- Export ---------- */
+
+	const EX = {
+		open: false, preset: store.get('export.preset', 'normal'), format: store.get('export.format', 'csv'), perExam: true, perProject: true,
+		pdfLayout: store.get('export.pdfLayout', 'grid'), photos: store.get('export.photos', true), job: null, progress: null,
+	};
+
+	const EXPORT_PRESETS = {
+		lite: { label: 'Lite', icon: 'fa-address-book-o', desc: 'Who they are and how to reach them' },
+		normal: { label: 'Normal', icon: 'fa-id-card-o', desc: 'Plus wallet, evals, stage, cursus and level' },
+		full: { label: 'Full', icon: 'fa-table', desc: 'Plus averages, dates, and the best mark of each exam and project' },
+	};
+	const PRESET_ORDER = ['lite', 'normal', 'full'];
+
+	/** The 42cursus if they're in it, otherwise their most recent cursus. */
+	function mainCursus(u) {
+		const list = Array.isArray(u.cursus_users) ? u.cursus_users : [];
+		return list.find((c) => c.cursus?.slug === '42cursus') || sortBy(list, (c) => c.begin_at, 'desc')[0] || null;
+	}
+	const day = (iso) => (iso ? String(iso).slice(0, 10) : null);
+	const round2 = (v) => (isNum(v) ? Math.round(v * 100) / 100 : null);
+	// the server leaves the counts empty for a profile without any project: they're 0 once it's fetched
+	const passedCount = (u, field) => (Array.isArray(u.cursus_users) ? u[field].filter((e) => e['validated?'] === true).length : null);
+	const IN_PROGRESS = new Set(['in_progress', 'waiting_for_correction', 'searching_a_group', 'creating_group', 'waiting_to_start']);
+
+	// [key, label, getter, preset where it starts, needs a full scan]
+	const EXPORT_COLUMNS = [
+		['login', 'Login', (u) => u.login, 'lite'],
+		['name', 'Name', (u) => u.usual_full_name || u.displayname, 'lite'],
+		['email', 'Email', (u) => u.email, 'lite'],
+		['pool', 'Pool', (u) => (u.pool_year ? `${humanize(u.pool_month)} ${u.pool_year}`.trim() : null), 'lite'],
+		['location', 'Location', (u) => u.location || null, 'lite'],
+		['intra', 'Intra profile', (u) => intraUrl(u.login), 'lite'],
+		['wallet', 'Wallet', (u) => u.wallet, 'normal'],
+		['eval_points', 'Eval points', (u) => u.correction_point, 'normal'],
+		['joined', 'Joined', (u) => day(u.created_at), 'normal'],
+		['stage', 'Stage', (u) => STAGES[u.stage]?.short || null, 'normal', true],
+		['cursus', 'Cursus', (u) => mainCursus(u)?.cursus?.name || null, 'normal', true],
+		['grade', 'Grade', (u) => mainCursus(u)?.grade || null, 'normal', true],
+		['level', 'Level', (u) => round2(u.level), 'normal', true],
+		['exams_passed', 'Exams passed', (u) => passedCount(u, '_exams'), 'normal', true],
+		['projects_passed', 'Projects passed', (u) => passedCount(u, '_projects'), 'normal', true],
+		['status', 'Status', (u) => (u['staff?'] ? 'staff' : u['alumni?'] ? 'alumni' : u['active?'] === false ? 'inactive' : 'active'), 'full'],
+		['last_update', 'Last update', (u) => day(u.updated_at), 'full'],
+		['cursus_end', 'Cursus ends', (u) => day(mainCursus(u)?.end_at), 'full', true],
+		['blackhole', 'Blackhole', (u) => day(mainCursus(u)?.blackholed_at), 'full', true],
+		['exam_avg', 'Exam average', (u) => round2(u.average_exam_final_mark), 'full', true],
+		['project_avg', 'Project average', (u) => round2(u.average_project_final_mark), 'full', true],
+		['overall_avg', 'Overall average', (u) => round2(u.average_mark), 'full', true],
+		['cpiscine_final', 'C Piscine final exam', (u) => u.cpiscine_final_mark, 'full', true],
+		['exam_attempts', 'Exam attempts', (u) => u._exams.length, 'full', true],
+		['projects_ongoing', 'Projects in progress', (u) => u._projects.filter((e) => IN_PROGRESS.has(e.status)).length, 'full', true],
+		['achievements', 'Achievements', (u) => (Array.isArray(u.achievements) ? u.achievements.length : null), 'full', true],
+		['profile_fetched', 'Profile fetched', (u) => (u.lastSave ? new Date(Number(u.lastSave) * 1000).toISOString().slice(0, 16).replace('T', ' ') : null), 'full', true],
+	];
+
+	const exportStudents = () => visibleStudents();
+
+	/** Exam or project names taken by the exported students, most common first. */
+	function entryColumns(list, field) {
+		const counts = new Map();
+		for (const u of list) for (const name of new Set(u[field].map((e) => e.project?.name || e.project?.slug))) counts.set(name, (counts.get(name) || 0) + 1);
+		return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([name]) => name);
+	}
+
+	/** Best attempt of each exam/project: mark, result, attempts and date, without the API noise. */
+	function entrySummary(u, field) {
+		return bestByName(u[field]).map(({ name, best, attempts }) => ({
+			name,
+			mark: isNum(best.final_mark) ? best.final_mark : null,
+			validated: best['validated?'] ?? null,
+			status: best.status || null,
+			attempts,
+			date: day(best.marked_at || best.updated_at),
+		})).sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+	}
+
+	/** { columns: [[key, label]], rows: [[...values]], records: [{...}] } for the current options. */
+	function buildExport(list = exportStudents()) {
+		const level = PRESET_ORDER.indexOf(EX.preset);
+		const fullscan = !!S.meta.fullscan;
+		const cols = EXPORT_COLUMNS.filter(([, , , preset, needsScan]) => PRESET_ORDER.indexOf(preset) <= level && (fullscan || !needsScan));
+		const columns = cols.map(([key, label]) => [key, label]);
+		const rows = list.map((u) => cols.map(([, , get]) => get(u) ?? null));
+		const full = EX.preset === 'full' && fullscan;
+		let records = list.map((u, i) => Object.fromEntries(cols.map(([key], j) => [key, rows[i][j]])));
+		if (full && EX.format === 'json') {
+			records = records.map((r, i) => {
+				const u = list[i];
+				return {
+					...r,
+					all_cursus: (u.cursus_users || []).map((c) => ({
+						name: c.cursus?.name, grade: c.grade || null, level: round2(c.level), begin: day(c.begin_at), end: day(c.end_at), blackhole: day(c.blackholed_at),
+						skills: (c.skills || []).map((sk) => ({ name: sk.name, level: round2(sk.level) })),
+					})),
+					exams: entrySummary(u, '_exams'),
+					projects: entrySummary(u, '_projects'),
+				};
+			});
+		} else if (full) {
+			// one column per exam / project: the best mark ("" if never attempted)
+			for (const [field, on, prefix] of [['_exams', EX.perExam, 'Exam'], ['_projects', EX.perProject, 'Project']]) {
+				if (!on) continue;
+				for (const name of entryColumns(list, field)) {
+					columns.push([`${prefix.toLowerCase()}:${name}`, `${prefix}: ${name}`]);
+					list.forEach((u, i) => {
+						const best = bestEntry(u[field].filter((e) => (e.project?.name || e.project?.slug) === name));
+						rows[i].push(best ? (isNum(best.final_mark) ? best.final_mark : String(best.status || 'attempted').replace(/_/g, ' ')) : null);
+					});
+				}
+			}
+		}
+		return { columns, rows, records };
+	}
+
+	function csvCell(v) {
+		if (v === null || v === undefined) return '';
+		const s = String(v);
+		return /[",\n\r;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+	}
+
+	function exportText(data = buildExport()) {
+		if (EX.format === 'json') return JSON.stringify(data.records, null, 2);
+		return [data.columns.map(([, label]) => label), ...data.rows].map((r) => r.map(csvCell).join(',')).join('\r\n');
+	}
+
+	function exportFilename() {
+		const campus = S.meta.campuses.find((c) => c.id === S.meta.campusId);
+		const slug = String(campus?.name || 'students').toLowerCase().normalize('NFD').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+		return `42stalk_${slug}_${EX.preset}_${new Date().toISOString().slice(0, 10)}.${EX.format}`;
+	}
+
+	function downloadExport() {
+		if (EX.format === 'pdf') { if (!EX.job) downloadPdf(); return; }
+		const text = exportText();
+		// the BOM makes Excel read the CSV as UTF-8 (accents in names)
+		const blob = new Blob([EX.format === 'csv' ? '﻿' + text : text], { type: EX.format === 'csv' ? 'text/csv;charset=utf-8' : 'application/json' });
+		const a = document.createElement('a');
+		a.href = URL.createObjectURL(blob);
+		a.download = exportFilename();
+		document.body.appendChild(a);
+		a.click();
+		a.remove();
+		setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+		toast(`Exported ${plural(exportStudents().length, 'student')} to <b>${esc(a.download)}</b>`);
+	}
+
+	/* ---------- PDF export ---------- */
+
+	let jsPdfLoading = null;
+	/** jsPDF is only loaded the first time a PDF is made. */
+	function loadJsPdf() {
+		if (window.jspdf) return Promise.resolve(window.jspdf.jsPDF);
+		jsPdfLoading = jsPdfLoading || new Promise((resolve, reject) => {
+			const script = document.createElement('script');
+			script.src = '/static/vendor/jspdf.umd.min.js';
+			script.onload = () => resolve(window.jspdf.jsPDF);
+			script.onerror = () => { jsPdfLoading = null; reject(new Error("Couldn't load the PDF library")); };
+			document.head.appendChild(script);
+		});
+		return jsPdfLoading;
+	}
+
+	const PHOTO_PX = [250, 300];  // photos are cropped to 5:6 and kept small: the PDF stays light
+	const PHOTO_RATIO = PHOTO_PX[1] / PHOTO_PX[0];
+	const PDF_FACT_ROW = 5.8;
+	const PDF_PAGE = { W: 210, H: 297, M: 12, top: 26, bottom: 279 };
+
+	/** Card sizes of the Cards layout: every card gets the height of the fullest one. */
+	function pdfGrid(list) {
+		const { W, M, top, bottom } = PDF_PAGE;
+		const cols = 5, gap = 3;
+		const cw = (W - 2 * M - gap * (cols - 1)) / cols;
+		const ph = EX.photos ? cw * PHOTO_RATIO : 0;
+		const maxFacts = EX.preset === 'full' ? 12 : 8;
+		const factRows = Math.ceil(Math.min(maxFacts, Math.max(0, ...list.map((u) => pdfFacts(u).length))) / 2);
+		const ch = ph + 13 + factRows * PDF_FACT_ROW + 1;
+		const rows = Math.max(1, Math.floor((bottom - top + gap) / (ch + gap)));
+		return { cols, gap, cw, ph, ch, maxFacts, perPage: rows * cols };
+	}
+	const photoCache = new Map();
+
+	/** The student's photo as a cropped JPEG data URL, or null (no photo, or the CDN failed). */
+	function pdfPhoto(u) {
+		const src = photoUrl(u);
+		if (!src) return Promise.resolve(null);
+		if (!photoCache.has(src)) {
+			photoCache.set(src, (async () => {
+				const res = await fetch(src, { mode: 'cors' });
+				if (!res.ok) throw new Error(res.status);
+				const bmp = await createImageBitmap(await res.blob());
+				const [w, h] = PHOTO_PX;
+				const scale = Math.max(w / bmp.width, h / bmp.height);
+				const canvas = document.createElement('canvas');
+				canvas.width = w;
+				canvas.height = h;
+				const ctx = canvas.getContext('2d');
+				// cover crop, keeping the top of the photo (faces)
+				ctx.drawImage(bmp, (w - bmp.width * scale) / 2, Math.min(0, (h - bmp.height * scale) * 0.25), bmp.width * scale, bmp.height * scale);
+				return canvas.toDataURL('image/jpeg', 0.82);
+			})().catch(() => null));
+		}
+		return photoCache.get(src);
+	}
+
+	async function loadPhotos(list, onProgress, cancelled) {
+		const photos = new Map();
+		let next = 0, done = 0;
+		const worker = async () => {
+			while (next < list.length && !cancelled()) {
+				const u = list[next++];
+				photos.set(u.id, await pdfPhoto(u));
+				onProgress(++done, list.length);
+			}
+		};
+		await Promise.all(Array.from({ length: 6 }, worker));
+		return photos;
+	}
+
+	/** The standard PDF fonts only know Latin-1: other letters lose their accents (ł → l), the rest becomes '?'. */
+	function pdfText(v) {
+		return [...String(v ?? '').normalize('NFC')].map((c) => {
+			if (c.charCodeAt(0) <= 255) return c;
+			const base = c.normalize('NFD').replace(/[̀-ͯ]/g, '');
+			return base.length === 1 && base.charCodeAt(0) <= 255 ? base : '?';
+		}).join('');
+	}
+
+	const exportValue = (u, key) => EXPORT_COLUMNS.find(([k]) => k === key)?.[2](u) ?? null;
+
+	/** "Label value" pairs shown for a student, by preset (only the ones with a value). */
+	function pdfFacts(u) {
+		const level = PRESET_ORDER.indexOf(EX.preset);
+		const facts = [];
+		const add = (minLevel, label, value) => { if (level >= minLevel && value !== null && value !== undefined && value !== '') facts.push([label, String(value)]); };
+		add(1, 'Level', isNum(u.level) ? fmtNum(u.level, 2) : null);
+		add(1, 'Wallet', isNum(u.wallet) ? fmtNum(u.wallet) : null);
+		add(1, 'Evals', u.correction_point);
+		add(1, 'Stage', exportValue(u, 'stage'));
+		add(1, 'Grade', exportValue(u, 'grade'));
+		add(1, 'Cursus', exportValue(u, 'cursus'));
+		add(1, 'Exams passed', exportValue(u, 'exams_passed'));
+		add(1, 'Projects passed', exportValue(u, 'projects_passed'));
+		add(1, 'Joined', exportValue(u, 'joined'));
+		add(2, 'Exam avg', isNum(u.average_exam_final_mark) ? fmtNum(u.average_exam_final_mark, 1) : null);
+		add(2, 'Project avg', isNum(u.average_project_final_mark) ? fmtNum(u.average_project_final_mark, 1) : null);
+		add(2, 'Overall avg', isNum(u.average_mark) ? fmtNum(u.average_mark, 1) : null);
+		add(2, 'C Piscine final', u.cpiscine_final_mark);
+		add(2, 'Cursus ends', exportValue(u, 'cursus_end'));
+		add(2, 'Blackhole', exportValue(u, 'blackhole'));
+		return facts;
+	}
+
+	const PDF = {
+		accent: [0, 150, 152], text: [20, 23, 28], muted: [110, 118, 130], line: [222, 226, 231], soft: [243, 245, 247],
+		ok: [26, 127, 55], okSoft: [220, 241, 226], bad: [207, 34, 46], badSoft: [250, 225, 227], none: [235, 237, 240],
+	};
+
+	/** Builds the PDF of `list`. `photos`: Map of student id → data URL (or null). */
+	function buildPdf(jsPDF, list, photos) {
+		const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait', compress: true });
+		const { W, H, M, top, bottom } = PDF_PAGE;
+		const m = S.meta;
+		const campus = m.campuses.find((c) => c.id === m.campusId)?.name || 'Students';
+		const filters = S.applied.filter(([k]) => k !== 'campus_id').map(([k, v]) => FLAG_PARAMS.has(k) ? (PARAM_LABELS[k] || k) : `${PARAM_LABELS[k] || k} ${v}`);
+		if (S.q) filters.push(`search "${S.q}"`);
+		const color = (rgb, kind = 'text') => (kind === 'fill' ? doc.setFillColor(...rgb) : kind === 'draw' ? doc.setDrawColor(...rgb) : doc.setTextColor(...rgb));
+		const font = (size, style = 'normal', rgb = PDF.text) => { doc.setFont('helvetica', style); doc.setFontSize(size); color(rgb); };
+		const fit = (text, width) => doc.splitTextToSize(pdfText(text), width)[0] || '';
+
+		const header = () => {
+			font(13, 'bold', PDF.accent);
+			doc.text('42stalk', M, M + 4);
+			font(13, 'bold');
+			doc.text(pdfText(campus), M + doc.getTextWidth('42stalk '), M + 4);
+			font(8, 'normal', PDF.muted);
+			doc.text(`${plural(list.length, 'student')} · ${EXPORT_PRESETS[EX.preset].label} · ${new Date().toISOString().slice(0, 10)}`, W - M, M + 4, { align: 'right' });
+			doc.text(fit(filters.length ? `Filters: ${filters.join(' · ')}` : 'No filters', W - 2 * M), M, M + 9);
+			color(PDF.line, 'draw');
+			doc.setLineWidth(0.3);
+			doc.line(M, M + 11, W - M, M + 11);
+		};
+
+		const drawPhoto = (u, x, y, w, h) => {
+			const data = photos.get(u.id);
+			if (data) {
+				doc.addImage(data, 'JPEG', x, y, w, h, `p${u.id}`, 'FAST');
+			} else {
+				color(PDF.soft, 'fill');
+				doc.rect(x, y, w, h, 'F');
+				font(w > 30 ? 20 : 12, 'bold', PDF.muted);
+				doc.text(pdfText(((u.first_name || u.login || '?')[0] + (u.last_name || '')[0] || '').toUpperCase()), x + w / 2, y + h / 2 + 2, { align: 'center' });
+			}
+		};
+
+		/** Exam/project best marks as coloured chips, wrapped; returns the y below them. */
+		const chips = (entries, x, y, maxX, draw = true) => {
+			let cx = x, cy = y;
+			doc.setFont('helvetica', 'normal');
+			doc.setFontSize(6.5);
+			for (const { name, best } of entries) {
+				const mark = isNum(best.final_mark) ? String(best.final_mark) : humanize(best.status || '').toLowerCase() || '—';
+				const label = `${pdfText(name)}  ${mark}`;
+				const w = Math.min(doc.getTextWidth(label) + 3, maxX - x);
+				if (cx + w > maxX && cx > x) { cx = x; cy += 4.2; }
+				if (draw) {
+					const ok = best['validated?'];
+					color(ok === true ? PDF.okSoft : ok === false ? PDF.badSoft : PDF.none, 'fill');
+					doc.roundedRect(cx, cy, w, 3.4, 0.8, 0.8, 'F');
+					color(ok === true ? PDF.ok : ok === false ? PDF.bad : PDF.muted);
+					doc.text(fit(label, w - 3), cx + 1.5, cy + 2.45);
+				}
+				cx += w + 1.2;
+			}
+			return entries.length ? cy + 4.2 : y;
+		};
+
+		const withEntries = EX.preset === 'full' && m.fullscan;
+		const entriesOf = (u) => ({
+			exams: bestByName(u._exams).sort((a, b) => String(b.best.marked_at || '').localeCompare(String(a.best.marked_at || ''))),
+			projects: bestByName(u._projects).sort((a, b) => String(b.best.marked_at || b.best.updated_at || '').localeCompare(String(a.best.marked_at || a.best.updated_at || ''))),
+		});
+
+		header();
+		if (EX.pdfLayout === 'grid') {
+			const { cols, gap, cw, ph, ch, maxFacts } = pdfGrid(list);
+			let i = 0, y = top;
+			for (const u of list) {
+				const col = i % cols;
+				if (col === 0 && i > 0) y += ch + gap;
+				if (col === 0 && y + ch > bottom) { doc.addPage(); header(); y = top; }
+				const x = M + col * (cw + gap);
+				color(PDF.line, 'draw');
+				doc.setLineWidth(0.25);
+				doc.roundedRect(x, y, cw, ch, 2, 2, 'S');
+				if (EX.photos) drawPhoto(u, x + 0.6, y + 0.6, cw - 1.2, ph - 0.6);
+				let ty = y + ph + 4;
+				// the login links to the intra profile
+				font(8.5, 'bold', PDF.accent);
+				doc.textWithLink(fit(u.login, cw - 4), x + 2, ty, { url: intraUrl(u.login) });
+				font(6.5, 'normal', PDF.text);
+				doc.text(fit(u.usual_full_name || u.displayname, cw - 4), x + 2, ty += 3.3);
+				font(6, 'normal', PDF.muted);
+				doc.text(fit(u.pool_year ? `Pool ${humanize(u.pool_month)} ${u.pool_year}` : ' ', cw - 4), x + 2, ty += 3);
+				ty += 1.5;
+				const facts = pdfFacts(u);
+				for (let f = 0; f < Math.min(maxFacts, facts.length); f += 2) {
+					for (const [j, fact] of [facts[f], facts[f + 1]].entries()) {
+						if (!fact) continue;
+						const fx = x + 2 + j * (cw - 4) / 2;
+						font(4.8, 'normal', PDF.muted);
+						const label = fact[0] === 'Projects passed' ? 'Proj. passed' : fact[0];  // cards are narrow
+						doc.text(fit(pdfText(label).toUpperCase(), (cw - 4) / 2 - 1), fx, ty + 2);
+						font(6.5, 'bold');
+						doc.text(fit(fact[1], (cw - 4) / 2 - 1), fx, ty + 4.6);
+					}
+					ty += PDF_FACT_ROW;
+				}
+				i++;
+			}
+		} else {
+			// one block per student: photo, identity, facts, and (full) exams/projects
+			const pw = EX.photos ? 22 : 0, ph = pw * PHOTO_RATIO;
+			const tx = M + (pw ? pw + 5 : 0), tw = W - M - tx;
+			let y = top;
+			list.forEach((u, idx) => {
+				const facts = pdfFacts(u);
+				const factRows = Math.ceil(facts.length / 5);
+				const entries = withEntries ? entriesOf(u) : null;
+				const measure = (yy) => {
+					let h = 12 + factRows * 7.5;
+					if (entries) {
+						for (const kind of ['exams', 'projects']) if (entries[kind].length) h = chips(entries[kind], tx + 16, yy + h, W - M, false) - yy + 1;
+					}
+					return Math.max(h, ph) + 4;
+				};
+				let bh = measure(y);
+				if (y + bh > bottom && y > top) { doc.addPage(); header(); y = top; bh = measure(y); }
+				if (EX.photos) drawPhoto(u, M, y, pw, ph);
+				font(11, 'bold', PDF.accent);
+				doc.textWithLink(pdfText(u.login), tx, y + 4, { url: intraUrl(u.login) });
+				const lw = doc.getTextWidth(pdfText(u.login));
+				font(9, 'normal');
+				doc.text(fit(u.usual_full_name || u.displayname, tw - lw - 4), tx + lw + 3, y + 4);
+				font(7.5, 'normal', PDF.muted);
+				const contact = [u.email, u.pool_year ? `Pool ${humanize(u.pool_month)} ${u.pool_year}` : null].filter(Boolean).join('  ·  ');
+				doc.text(fit(contact, tw), tx, y + 8.5);
+				let fy = y + 12;
+				facts.forEach(([label, value], f) => {
+					const fx = tx + (f % 5) * (tw / 5);
+					if (f && f % 5 === 0) fy += 7.5;
+					font(5.5, 'normal', PDF.muted);
+					doc.text(pdfText(label).toUpperCase(), fx, fy + 2);
+					font(8, 'bold');
+					doc.text(fit(value, tw / 5 - 2), fx, fy + 5.5);
+				});
+				let ey = y + 12 + factRows * 7.5;
+				if (entries) {
+					for (const [kind, label] of [['exams', 'Exams'], ['projects', 'Projects']]) {
+						if (!entries[kind].length) continue;
+						font(6, 'bold', PDF.muted);
+						doc.text(label.toUpperCase(), tx, ey + 2.5);
+						ey = chips(entries[kind], tx + 16, ey, W - M) + 1;
+					}
+				}
+				y += bh;
+				if (idx < list.length - 1) {
+					color(PDF.line, 'draw');
+					doc.setLineWidth(0.2);
+					doc.line(M, y - 2, W - M, y - 2);
+				}
+			});
+		}
+
+		const pages = doc.getNumberOfPages();
+		for (let p = 1; p <= pages; p++) {
+			doc.setPage(p);
+			font(7, 'normal', PDF.muted);
+			doc.text(`Page ${p} of ${pages}`, W - M, H - M + 2, { align: 'right' });
+			doc.text('Data from the 42 API · generated by 42stalk', M, H - M + 2);
+		}
+		doc.setProperties({ title: `42stalk — ${pdfText(campus)}`, subject: `${list.length} students`, creator: '42stalk' });
+		return doc;
+	}
+
+	/** Rough page count, shown before building. */
+	function pdfPages(n) {
+		if (!n) return 0;
+		if (EX.pdfLayout === 'grid') return Math.ceil(n / pdfGrid(exportStudents()).perPage);
+		const perPage = EX.preset === 'full' && S.meta.fullscan ? 5 : EX.photos ? 8 : 12;
+		return Math.ceil(n / perPage);
+	}
+
+	async function downloadPdf() {
+		const list = exportStudents();
+		const run = (EX.job = { cancelled: false });
+		const cancelled = () => run.cancelled || EX.job !== run;
+		const status = (text) => { EX.progress = text; if (EX.open) renderExport(); };
+		try {
+			status('Loading the PDF library…');
+			const jsPDF = await loadJsPdf();
+			const photos = EX.photos
+				? await loadPhotos(list, (done, total) => status(`Loading photos ${fmtNum(done)} / ${fmtNum(total)}…`), cancelled)
+				: new Map();
+			if (cancelled()) return;
+			status('Building the PDF…');
+			await new Promise((r) => setTimeout(r, 30));  // let the status paint
+			const doc = buildPdf(jsPDF, list, photos);
+			doc.save(exportFilename());
+			const missing = EX.photos ? list.filter((u) => photoUrl(u) && !photos.get(u.id)).length : 0;
+			toast(`Exported ${plural(list.length, 'student')} to <b>${esc(exportFilename())}</b>${missing ? ` (${plural(missing, 'photo')} couldn't be loaded)` : ''}`, null, 5000);
+		} catch (e) {
+			console.error(e);
+			toast(`Couldn't make the PDF: ${esc(e.message || e)}`, null, 6000);
+		} finally {
+			if (EX.job === run) { EX.job = null; status(null); }
+		}
+	}
+
+	function openExport() {
+		if (!S.meta || S.meta.error) return;
+		EX.open = true;
+		closeMenu();
+		renderExport();
+		$('#export-modal').hidden = false;
+	}
+
+	function closeExport() {
+		EX.open = false;
+		// closing stops a PDF still loading photos
+		if (EX.job) EX.job.cancelled = true;
+		$('#export-modal').hidden = true;
+	}
+
+	/** A small HTML sketch of the first PDF entries (the real PDF uses the same fields). */
+	function renderPdfPreview(list) {
+		const sample = list.slice(0, EX.pdfLayout === 'grid' ? 5 : 2);
+		const facts = (u) => pdfFacts(u).slice(0, EX.pdfLayout === 'grid' ? (EX.preset === 'full' ? 12 : 8) : 15)
+			.map(([k, v]) => `<div><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('');
+		const pic = (u) => EX.photos ? `<div class="pp-photo photo">${photo(u)}</div>` : '';
+		const entries = (u) => EX.preset === 'full' && S.meta.fullscan
+			? ['_exams', '_projects'].map((f) => bestByName(u[f]).slice(0, 8).map(({ name, best }) => entryChip(f === '_exams' ? 'exams' : 'projects', best)).join('')).join('')
+			: '';
+		return `
+			<div class="pdf-preview ${EX.pdfLayout}">
+				<div class="pp-page">
+					${sample.map((u) => EX.pdfLayout === 'grid' ? `
+						<div class="pp-card">${pic(u)}<div class="pp-body"><b class="pp-login">${esc(u.login)}</b><div>${esc(u.usual_full_name || u.displayname)}</div>
+							<small>${u.pool_year ? `Pool ${esc(humanize(u.pool_month))} ${esc(u.pool_year)}` : ''}</small><div class="pp-facts">${facts(u)}</div></div></div>` : `
+						<div class="pp-row">${pic(u)}<div class="pp-body"><div><b class="pp-login">${esc(u.login)}</b> ${esc(u.usual_full_name || u.displayname)}</div>
+							<small>${esc([u.email, u.pool_year ? `Pool ${humanize(u.pool_month)} ${u.pool_year}` : ''].filter(Boolean).join(' · '))}</small>
+							<div class="pp-facts">${facts(u)}</div><div class="echips">${entries(u)}</div></div></div>`).join('')}
+				</div>
+				<p class="field-hint">Preview of the first ${plural(sample.length, 'student')}. Each login links to the intra profile.</p>
+			</div>`;
+	}
+
+	function renderExport() {
+		if (!EX.open) return;
+		const m = S.meta;
+		const list = exportStudents();
+		const data = buildExport(list);
+		const fullscan = !!m.fullscan;
+		const skipped = fullscan ? [] : EXPORT_COLUMNS.filter(([, , , preset, needsScan]) => needsScan && PRESET_ORDER.indexOf(preset) <= PRESET_ORDER.indexOf(EX.preset));
+		const preview = data.rows.slice(0, 5);
+		const fullJson = EX.preset === 'full' && fullscan && EX.format === 'json';
+		$('#export-modal').innerHTML = `
+			<div class="modal-card modal-wide export-card" role="dialog" aria-label="Export students">
+				<div class="sheet-head">
+					<div style="flex:1">
+						<h2>Export students</h2>
+						<div class="field-hint">${plural(list.length, 'student')} — the current filters, search and sort${S.q ? ` (search “${esc(S.q)}”)` : ''}.</div>
+					</div>
+					<button class="btn btn-ghost icon-btn" data-act="ex-close" aria-label="Close (Esc)"><i class="fa fa-times"></i></button>
+				</div>
+				<div class="sheet-body export-body">
+					<div class="export-presets">
+						${PRESET_ORDER.map((k) => {
+							const p = EXPORT_PRESETS[k];
+							return `<button class="export-preset ${EX.preset === k ? 'on' : ''}" data-act="ex-preset" data-preset="${k}">
+								<i class="fa ${p.icon}"></i><b>${p.label}</b><span>${p.desc}</span></button>`;
+						}).join('')}
+					</div>
+					<div class="export-options">
+						<div class="segmented" role="group" aria-label="Format">
+							<button class="${EX.format === 'csv' ? 'active' : ''}" data-act="ex-format" data-format="csv"><i class="fa fa-file-excel-o"></i>CSV</button>
+							<button class="${EX.format === 'json' ? 'active' : ''}" data-act="ex-format" data-format="json"><i class="fa fa-file-code-o"></i>JSON</button>
+							<button class="${EX.format === 'pdf' ? 'active' : ''}" data-act="ex-format" data-format="pdf"><i class="fa fa-file-pdf-o"></i>PDF</button>
+						</div>
+						${EX.format === 'pdf' ? `
+							<div class="segmented" role="group" aria-label="PDF layout">
+								<button class="${EX.pdfLayout === 'grid' ? 'active' : ''}" data-act="ex-layout" data-layout="grid" title="Photo cards, 12 per page"><i class="fa fa-th-large"></i>Cards</button>
+								<button class="${EX.pdfLayout === 'list' ? 'active' : ''}" data-act="ex-layout" data-layout="list" title="One block per student${EX.preset === 'full' ? ', with their exams and projects' : ''}"><i class="fa fa-list"></i>Detailed</button>
+							</div>
+							<label class="switch"><input type="checkbox" data-bind="ex-photos" ${EX.photos ? 'checked' : ''}><span class="track"></span><span>Photos</span></label>` : ''}
+						${EX.preset === 'full' && fullscan && EX.format === 'csv' ? `
+							<label class="switch"><input type="checkbox" data-bind="ex-per-exam" ${EX.perExam ? 'checked' : ''}><span class="track"></span><span>A column per exam</span></label>
+							<label class="switch"><input type="checkbox" data-bind="ex-per-project" ${EX.perProject ? 'checked' : ''}><span class="track"></span><span>A column per project</span></label>` : ''}
+						<span class="field-hint">${EX.format === 'pdf' ? `A4 · about ${plural(pdfPages(list.length), 'page')}${EX.photos && list.length > 300 ? ` · ${fmtNum(list.length)} photos to download first` : ''}` : EX.format === 'csv' ? `${plural(data.columns.length, 'column')} · opens in Excel, Sheets, Numbers` : fullJson ? 'One object per student, with their cursus, exams and projects' : 'One object per student'}</span>
+					</div>
+					${skipped.length ? `
+						<div class="notice warn"><i class="fa fa-bolt"></i>
+							<div class="notice-body"><div class="notice-title">${plural(skipped.length, 'column')} need a full scan</div>
+								<div class="notice-text">${skipped.map(([, label]) => esc(label)).join(', ')} — left out until each profile is loaded.</div></div>
+							<div class="notice-actions"><button class="btn btn-primary btn-sm" data-act="ex-fullscan"><i class="fa fa-bolt"></i>Run full scan</button></div>
+						</div>` : ''}
+					${EX.format === 'pdf' ? renderPdfPreview(list) : `<div class="export-columns">${data.columns.map(([key, label]) => `<span class="chip static ${key.includes(':') ? 'chip-entry' : ''}">${esc(label)}</span>`).join('')}</div>
+					${fullJson ? `<pre class="json export-json">${highlightJson(JSON.stringify(data.records.slice(0, 2), null, 2))}</pre>` : `
+						<div class="table-wrap export-preview">
+							<table class="data compact">
+								<thead><tr>${data.columns.map(([, label]) => `<th>${esc(label)}</th>`).join('')}</tr></thead>
+								<tbody>${preview.map((r) => `<tr>${r.map((v) => `<td>${v === null ? '<span class="muted">—</span>' : esc(v)}</td>`).join('')}</tr>`).join('')}</tbody>
+							</table>
+						</div>`}
+					${list.length > preview.length && !fullJson ? `<p class="field-hint" style="margin-top:6px">Preview of the first ${preview.length} of ${fmtNum(list.length)} rows.</p>` : ''}`}
+				</div>
+				<div class="sheet-foot">
+					<span class="field-hint mono">${esc(exportFilename())}</span>
+					<span class="grow"></span>
+					${EX.progress ? `<span class="field-hint export-progress"><span class="spinner spinner-sm"></span>${esc(EX.progress)}</span>` : ''}
+					${EX.format === 'pdf' ? '' : `<button class="btn" data-act="ex-copy" ${list.length ? '' : 'disabled'}><i class="fa fa-clipboard"></i>Copy</button>`}
+					<button class="btn btn-primary" data-act="ex-download" ${list.length && !EX.job ? '' : 'disabled'}><i class="fa fa-download"></i>Download ${EX.format.toUpperCase()}</button>
+				</div>
+			</div>`;
+	}
+
 	/* ---------- Campus manager ---------- */
 
 	const CM = { open: false, data: null, jobs: null, q: '', filter: 'all', sel: new Set(), seen: null, timer: null, force: false };
@@ -2357,6 +2924,7 @@
 					${row('Apply pending filters', 'Ctrl', '↵')}
 					${row('Open filters', 'F')}
 					${row('Fetch & update campuses', 'C')}
+					${row('Export students', 'E')}
 					${row('Search students', '/')}
 					<h4>Navigation</h4>
 					${row('Students · Exams · Projects', '1', '2', '3')}
@@ -2509,6 +3077,7 @@
 		renderNotices();
 		renderView();
 		if (S.panelOpen) { initFieldRows(); renderFilterPanel(); }
+		if (EX.open) renderExport();
 		if (S.drawer.id !== null) {
 			if (S.byId.has(S.drawer.id)) renderDrawer();
 			else closeSheets();
@@ -2608,6 +3177,14 @@
 			case 'zoom': ev.stopPropagation(); openLightbox(d.id); break;
 			case 'campuses': openCampusManager(); break;
 			case 'cm-close': closeCampusManager(); break;
+			case 'ex-open': openExport(); break;
+			case 'ex-close': closeExport(); break;
+			case 'ex-preset': EX.preset = d.preset; store.set('export.preset', EX.preset); renderExport(); break;
+			case 'ex-format': EX.format = d.format; store.set('export.format', EX.format); renderExport(); break;
+			case 'ex-layout': EX.pdfLayout = d.layout; store.set('export.pdfLayout', EX.pdfLayout); renderExport(); break;
+			case 'ex-download': downloadExport(); break;
+			case 'ex-copy': copyText(exportText()); break;
+			case 'ex-fullscan': closeExport(); applyNow((p) => setParam(p, 'fullscan', '')); break;
 			case 'cm-filter': CM.filter = d.filter; renderCampusManager(); break;
 			case 'cm-toggle': { const id = Number(d.id); CM.sel.has(id) ? CM.sel.delete(id) : CM.sel.add(id); renderCampusManager(); break; }
 			case 'cm-toggle-all': {
@@ -2683,6 +3260,7 @@
 	$('#btn-filters').addEventListener('click', () => (S.panelOpen ? closeSheets() : openFilterPanel()));
 	$('#btn-shortcuts').addEventListener('click', () => toggleShortcuts());
 	$('#btn-campuses').addEventListener('click', openCampusManager);
+	$('#export-modal').addEventListener('click', (ev) => { if (ev.target.id === 'export-modal') closeExport(); });
 	$('#campus-manager').addEventListener('click', (ev) => { if (ev.target.id === 'campus-manager') closeCampusManager(); });
 	$('#shortcuts').addEventListener('click', (ev) => { if (ev.target.id === 'shortcuts') toggleShortcuts(false); });
 	$('#btn-theme').addEventListener('click', () => {
@@ -2724,6 +3302,9 @@
 				break;
 			case 'cm-q': CM.q = value; keepFocus(renderCampusManager); break;
 			case 'cm-force': CM.force = value; renderCampusManager(); break;
+			case 'ex-per-exam': EX.perExam = value; renderExport(); break;
+			case 'ex-photos': EX.photos = value; store.set('export.photos', value); renderExport(); break;
+			case 'ex-per-project': EX.perProject = value; renderExport(); break;
 			case 'rs-students':
 			case 'rs-profiles':
 			case 'rs-force': {
@@ -2789,6 +3370,7 @@
 			return;
 		}
 		if (ev.key === 'Escape') {
+			if (EX.open) { closeExport(); return; }
 			if (CM.open && $('#popover').hidden) { closeCampusManager(); return; }
 			if (!$('#popover').hidden) closeMenu();
 			else if (!$('#shortcuts').hidden) toggleShortcuts(false);
@@ -2808,6 +3390,7 @@
 			case 'k': case 'ArrowUp': if (drawerOpen) { ev.preventDefault(); drawerStep(-1); } break;
 			case '?': toggleShortcuts(); break;
 			case 'c': case 'C': CM.open ? closeCampusManager() : openCampusManager(); break;
+			case 'e': case 'E': EX.open ? closeExport() : openExport(); break;
 		}
 	});
 	document.addEventListener('keyup', (ev) => {

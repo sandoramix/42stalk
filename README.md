@@ -59,6 +59,16 @@ fetched again from its drawer (the refresh button next to "Intra profile").
 
 ## Using the interface
 
+- **Export** (<kbd>E</kbd>): download or copy the students on screen (current filters, search and sort)
+  as CSV or JSON. **Lite**: login, name, email, pool, location, intra link. **Normal**: plus wallet,
+  eval points, joined date, stage, cursus, grade, level, exams/projects passed. **Full**: plus status,
+  dates (cursus end, blackhole), exam/project/overall averages, C Piscine final, and the best mark of
+  each exam and project (one column each in CSV; in JSON, each student's cursus, exams and projects).
+  Columns that need a full scan are left out without one.
+  **PDF** (A4, with photos): **Cards**, a photo grid of 15 students per page, or **Detailed**, one block
+  per student (with Full, their exams and projects as coloured marks). Logins link to the intra
+  profiles; photos are loaded from the intra CDN when the PDF is made, and can be turned off.
+
 - **Click-to-filter**: hover any value and click the funnel icon, or <kbd>Ctrl</kbd>+click it to add it
   to the filters (<kbd>Alt</kbd>+click to exclude it). New filters stay pending until you press
   **Apply** (<kbd>Ctrl</kbd>+<kbd>Enter</kbd>).
