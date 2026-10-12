@@ -8,6 +8,7 @@ import time
 from collections import defaultdict
 import numbers
 import re
+import requests
 
 from api import API
 
@@ -242,13 +243,35 @@ def flatten_keys(obj, parent_key=""):
 def is_exam(entry):
 	return 'exam' in ((entry.get('project') or {}).get('slug') or '').lower()
 
+API_SERVER_RETRIES = 5
+
+def short_api_error(e):
+	"""API42 errors carry the whole response body: keep an HTML error page down to its <title>."""
+	msg = str(e)
+	if "<html" in msg.lower():
+		title = re.search(r"<title>(.*?)</title>", msg, re.I | re.S)
+		msg = msg[:msg.find("<")].strip() + (f" ({title.group(1).strip()})" if title else "")
+	return msg[:300]
+
+def is_transient_api_error(e):
+	"""5xx answers and network errors from the 42 API usually go away when retried."""
+	return isinstance(e, requests.RequestException) or bool(re.match(r"Error: 5\d\d\b", str(e)))
+
 def getStudData(user, idx = -1):
 	"""Fetches the full profile of a student, or returns None if the 42 API fails."""
-	try:
-		_ = API.getUserByID(user["id"])
-	except Exception as e:
-		logging.warning(f'Failed to fetch user data for {user["id"]=}\t{user["login"]=}: {e}')
-		return None
+	attempt = 0
+	while True:
+		try:
+			_ = API.getUserByID(user["id"])
+			break
+		except Exception as e:
+			if is_transient_api_error(e) and attempt < API_SERVER_RETRIES:
+				attempt += 1
+				logging.warning(f'Retry {attempt}/{API_SERVER_RETRIES} for {user["id"]=}\t{user["login"]=}: {short_api_error(e)}')
+				time.sleep(2 ** attempt)
+				continue
+			logging.warning(f'Failed to fetch user data for {user["id"]=}\t{user["login"]=}: {short_api_error(e)}')
+			return None
 	if (not _):
 		return None
 	_['failedFetchExams'] = False
@@ -802,8 +825,18 @@ def api_paginated(path, on_page=None):
 	data = []
 	page = 1
 	auth_retries = 0
+	# 5xx and network errors are usually transient on the 42 API: retry a page a few times
+	server_retries = 0
 	while True:
-		r = API.session.get(f"{API.api_url}{path}", params={"per_page": 100, "page": page})
+		try:
+			r = API.session.get(f"{API.api_url}{path}", params={"per_page": 100, "page": page}, timeout=60)
+		except requests.RequestException as e:
+			if server_retries < API_SERVER_RETRIES:
+				server_retries += 1
+				logging.warning("42 API request failed (%s), retry %d/%d", e, server_retries, API_SERVER_RETRIES)
+				time.sleep(2 ** server_retries)
+				continue
+			raise RuntimeError(f"42 API unreachable: {e}") from e
 		if r.status_code == 429:
 			time.sleep(1)
 			continue
@@ -811,9 +844,16 @@ def api_paginated(path, on_page=None):
 			auth_retries += 1
 			API.session.headers.update(API._Api42__getTokenHeader())
 			continue
+		if r.status_code >= 500 and server_retries < API_SERVER_RETRIES:
+			server_retries += 1
+			logging.warning("42 API responded %d on %s page %d, retry %d/%d", r.status_code, path, page, server_retries, API_SERVER_RETRIES)
+			time.sleep(2 ** server_retries)
+			continue
 		if r.status_code != 200:
-			raise RuntimeError(f"42 API responded {r.status_code}: {r.text[:200]}")
+			body = "" if r.text.lstrip().startswith("<") else f": {r.text[:200]}"
+			raise RuntimeError(f"42 API responded {r.status_code} on {path} page {page}{body}")
 		auth_retries = 0
+		server_retries = 0
 		items = r.json()
 		data += items
 		if on_page:
